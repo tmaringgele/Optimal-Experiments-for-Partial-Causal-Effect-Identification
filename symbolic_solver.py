@@ -318,6 +318,7 @@ def _piece_to_string(aZ: float, aM: float, b: float, use_doZ: bool, use_doM: boo
     return " + ".join(terms)
 
 
+# Note: This function probes different values for the intervention to recover the functional form of e.g. f_UB(p)
 def parametric_bounds_PY_doX1(
     Z, X, M, Y,
     use_doZ: bool = False,
