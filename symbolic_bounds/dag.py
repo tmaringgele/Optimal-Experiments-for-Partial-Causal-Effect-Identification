@@ -31,7 +31,7 @@ class DAG:
         self._nodes: Dict[str, Node] = {}
     
     def add_node(self, name: str, support: Optional[Set[int]] = None, 
-                 partition: Optional[str] = None) -> Node:
+                 partition: str = 'R') -> Node:
         """
         Add a node to the DAG.
         
@@ -39,18 +39,25 @@ class DAG:
             name: The name of the node to add.
             support: Set of natural numbers in the node's domain. 
                     Defaults to {0, 1} for binary variables.
-            partition: Optional partition assignment ('L' or 'R').
+            partition: Partition assignment ('L' or 'R'). Required.
+                      Defaults to 'R' if not specified.
         
         Returns:
             The created or existing Node object.
+            
+        Raises:
+            ValueError: If partition is not 'L' or 'R'.
         """
+        if partition not in ('L', 'R'):
+            raise ValueError(f"Partition must be 'L' or 'R', got '{partition}'")
+        
         if name not in self._nodes:
             node = Node(name, support=support)
             self._nodes[name] = node
             
             if partition == 'L':
                 self.W_L.add(node)
-            elif partition == 'R':
+            else:  # partition == 'R'
                 self.W_R.add(node)
         
         return self._nodes[name]
@@ -77,16 +84,19 @@ class DAG:
         """
         self.edges.add((parent, child))
     
-    def add_edge_by_name(self, parent_name: str, child_name: str) -> None:
+    def add_edge_by_name(self, parent_name: str, child_name: str, 
+                         parent_partition: str = 'R', child_partition: str = 'R') -> None:
         """
         Add a directed edge using node names.
         
         Args:
             parent_name: The name of the parent node.
             child_name: The name of the child node.
+            parent_partition: Partition for parent node if it doesn't exist ('L' or 'R').
+            child_partition: Partition for child node if it doesn't exist ('L' or 'R').
         """
-        parent = self.add_node(parent_name)
-        child = self.add_node(child_name)
+        parent = self.add_node(parent_name, partition=parent_partition)
+        child = self.add_node(child_name, partition=child_partition)
         self.add_edge(parent, child)
     
     def get_parents(self, node: Node) -> Set[Node]:
