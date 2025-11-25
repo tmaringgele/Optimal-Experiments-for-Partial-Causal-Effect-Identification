@@ -51,23 +51,27 @@ class ProgramFactory:
         # ALGORITHM 1 - INITIALIZATION: Enumerate response types for all vertices
         # =========================================================================
         # For each vertex, enumerate all response types
-        # This gives us ℵᴿ = total number of response type combinations
         all_response_types = dag.generate_all_response_types()
         
-        # Create all response type combinations r_γ for γ ∈ {1, ..., ℵᴿ}
-        nodes = sorted(dag.get_all_nodes(), key=lambda n: n.name)
-        response_type_lists = [all_response_types[node] for node in nodes]
-        response_type_combinations = list(itertools.product(*response_type_lists))
+        # Get all nodes (needed for compatibility checking)
+        all_nodes = sorted(dag.get_all_nodes(), key=lambda n: n.name)
         
-        # ℵᴿ = number of response type combinations
-        aleph_R = len(response_type_combinations)
+        # ℵᴿ = number of response type combinations for W_R ONLY (not all nodes!)
+        # q represents response type combinations for nodes in W_R
+        w_r_nodes = sorted(dag.W_R, key=lambda n: n.name)
+        w_r_response_type_lists = [all_response_types[node] for node in w_r_nodes]
+        w_r_response_type_combinations = list(itertools.product(*w_r_response_type_lists))
+        
+        # ℵᴿ = |supp(R_R)| = number of response type combinations for W_R
+        aleph_R = len(w_r_response_type_combinations)
         
         # Store index mapping: response type combination r_γ -> γ (0-indexed)
-        for gamma, rt_combo in enumerate(response_type_combinations):
+        # Note: r_γ only includes response types for nodes in W_R
+        for gamma, rt_combo in enumerate(w_r_response_type_combinations):
             constraints.response_type_index[rt_combo] = gamma
-            # Create human-readable label for r_γ
+            # Create human-readable label for r_γ (only W_R nodes)
             label_parts = []
-            for node, rt in zip(nodes, rt_combo):
+            for node, rt in zip(w_r_nodes, rt_combo):
                 rt_num = node.response_types.index(rt) + 1
                 label_parts.append(f"r_{node.name}^{rt_num}")
             constraints.response_type_labels.append(", ".join(label_parts))
@@ -81,16 +85,16 @@ class ProgramFactory:
         # Where B = number of configurations (w_{b,L}, w_{b,R})
         #
         # The outer loop iterates over b (configurations)
-        # The inner loop iterates over γ (response type combinations)
+        # The inner loop iterates over γ (response type combinations for W_R)
         constraints.P, constraints.P_star, constraints.joint_prob_index, constraints.joint_prob_labels = \
-            ProgramFactory._generate_joint_constraints(dag, nodes, response_type_combinations)
+            ProgramFactory._generate_joint_constraints(dag, all_nodes, all_response_types, 
+                                                      w_r_nodes, w_r_response_type_combinations)
         
         # =========================================================================
         # Generate Λ matrices for conditional probabilities
         # =========================================================================
         # For each distinct w_{b,L}, create corresponding Λ matrix entries
         w_l_nodes = sorted(dag.W_L, key=lambda n: n.name)
-        w_r_nodes = sorted(dag.W_R, key=lambda n: n.name)
         
         # Generate all configurations of W_L (the conditioning variables)
         w_l_supports = [node.support for node in w_l_nodes]
@@ -104,8 +108,8 @@ class ProgramFactory:
             
             P_lambda, p_lambda, cond_index, cond_labels = \
                 ProgramFactory._generate_conditional_constraints(
-                    dag, nodes, response_type_combinations,
-                    w_l_nodes, w_l_values, w_r_nodes
+                    dag, all_nodes, all_response_types,
+                    w_l_nodes, w_l_values, w_r_nodes, w_r_response_type_combinations
                 )
             
             constraints.Lambda[condition_name] = P_lambda
@@ -116,8 +120,10 @@ class ProgramFactory:
         return constraints
     
     @staticmethod
-    def _generate_joint_constraints(dag: DAG, nodes: List[Node],
-                                    response_type_combinations: List[Tuple[ResponseType, ...]]) \
+    def _generate_joint_constraints(dag: DAG, all_nodes: List[Node],
+                                    all_response_types: Dict[Node, List[ResponseType]],
+                                    w_r_nodes: List[Node],
+                                    w_r_response_type_combinations: List[Tuple[ResponseType, ...]]) \
             -> Tuple[np.ndarray, np.ndarray, Dict, List[str]]:
         """
         Generate constraints for joint probabilities p* = P(W_L, W_R).
@@ -125,7 +131,7 @@ class ProgramFactory:
         ALGORITHM 1 - Main double loop structure:
         
         for b ∈ {1, …, B} do                    # For each configuration
-            for γ ∈ {1, …, ℵᴿ} do               # For each response type combination
+            for γ ∈ {1, …, ℵᴿ} do               # For each response type combination (W_R only!)
                 Initialize ω as empty vector
                 for i ∈ R do
                     Set ωᵢ := gᵂⁱ(w_{b,L}, r_γ)  # Simulate W_R values
@@ -140,18 +146,20 @@ class ProgramFactory:
         
         Args:
             dag: The causal DAG.
-            nodes: Ordered list of all nodes (both W_L and W_R).
-            response_type_combinations: All r_γ for γ ∈ {1, ..., ℵᴿ}.
+            all_nodes: Ordered list of all nodes (both W_L and W_R).
+            all_response_types: Response types for all nodes.
+            w_r_nodes: Ordered list of nodes in W_R.
+            w_r_response_type_combinations: All r_γ for γ ∈ {1, ..., ℵᴿ} (W_R only).
         
         Returns:
             Tuple of (P matrix [B × ℵᴿ], p* vector, index mapping, labels).
         """
         # Generate all possible configurations (w_{b,L}, w_{b,R}) for b ∈ {1, ..., B}
-        all_supports = [node.support for node in nodes]
+        all_supports = [node.support for node in all_nodes]
         all_configs = list(itertools.product(*all_supports))
         
         B = len(all_configs)  # Number of configurations
-        aleph_R = len(response_type_combinations)  # ℵᴿ
+        aleph_R = len(w_r_response_type_combinations)  # ℵᴿ = |supp(R_R)|
         
         # Initialize P as a B × ℵᴿ matrix of 0s
         P = np.zeros((B, aleph_R))
@@ -162,28 +170,30 @@ class ProgramFactory:
         # for b ∈ {1, …, B} do
         for b, value_config in enumerate(all_configs):
             # Configuration (w_{b,L}, w_{b,R})
-            config = tuple((node, value) for node, value in zip(nodes, value_config))
+            config = tuple((node, value) for node, value in zip(all_nodes, value_config))
             joint_prob_index[config] = b
             
             # Create label for configuration b
             label = ", ".join(f"{node.name}={value}" for node, value in config)
             joint_prob_labels.append(label)
             
-            # for γ ∈ {1, …, ℵᴿ} do
-            for gamma, r_gamma in enumerate(response_type_combinations):
-                # Check if ω = w_{b,R} (i.e., response types r_γ produce configuration b)
-                # This is done by _is_compatible which simulates ωᵢ := gᵂⁱ(w_{b,L}, r_γ)
-                if ProgramFactory._is_compatible(dag, nodes, r_gamma, config):
+            # for γ ∈ {1, …, ℵᴿ} do (γ indexes response type combinations for W_R only)
+            for gamma, r_gamma_wr in enumerate(w_r_response_type_combinations):
+                # Check if ω = w_{b,R} where ωᵢ := gᵂⁱ(w_{b,L}, r_γ) for i ∈ R
+                # r_gamma_wr contains only response types for W_R nodes
+                if ProgramFactory._is_compatible_wr(dag, all_nodes, all_response_types,
+                                                     w_r_nodes, r_gamma_wr, config):
                     # if ω = w_{b,R} then P_{b,γ} := 1
                     P[b, gamma] = 1.0
         
         return P, p_star, joint_prob_index, joint_prob_labels
     
     @staticmethod
-    def _generate_conditional_constraints(dag: DAG, nodes: List[Node],
-                                         response_type_combinations: List[Tuple[ResponseType, ...]],
+    def _generate_conditional_constraints(dag: DAG, all_nodes: List[Node],
+                                         all_response_types: Dict[Node, List[ResponseType]],
                                          w_l_nodes: List[Node], w_l_values: Tuple[int, ...],
-                                         w_r_nodes: List[Node]) \
+                                         w_r_nodes: List[Node],
+                                         w_r_response_type_combinations: List[Tuple[ResponseType, ...]]) \
             -> Tuple[np.ndarray, np.ndarray, Dict, List[str]]:
         """
         Generate constraints for conditional probabilities P(W_R | W_L).
@@ -193,7 +203,7 @@ class ProgramFactory:
         
         For the given w_{b,L} (specified by w_l_values):
         - We iterate over all possible w_R configurations
-        - For each (w_{b,L}, w_R) pair, we check all response types r_γ
+        - For each (w_{b,L}, w_R) pair, we check all response types r_γ (W_R only!)
         - If r_γ produces this configuration, we set the corresponding entry to 1
         
         This uses the same compatibility check as in the main algorithm:
@@ -201,11 +211,12 @@ class ProgramFactory:
         
         Args:
             dag: The causal DAG.
-            nodes: Ordered list of all nodes.
-            response_type_combinations: All r_γ for γ ∈ {1, ..., ℵᴿ}.
+            all_nodes: Ordered list of all nodes.
+            all_response_types: Response types for all nodes.
             w_l_nodes: List of nodes in W_L.
             w_l_values: The specific w_{b,L} values (conditioning values).
             w_r_nodes: List of nodes in W_R.
+            w_r_response_type_combinations: All r_γ for γ ∈ {1, ..., ℵᴿ} (W_R only).
         
         Returns:
             Tuple of (P_Lambda matrix, p_Lambda vector, index mapping, labels).
@@ -215,7 +226,7 @@ class ProgramFactory:
         w_r_configs = list(itertools.product(*w_r_supports))
         
         n_configs = len(w_r_configs)
-        aleph_R = len(response_type_combinations)  # ℵᴿ
+        aleph_R = len(w_r_response_type_combinations)  # ℵᴿ = |supp(R_R)|
         
         # Initialize P_Λ matrix
         P_lambda = np.zeros((n_configs, aleph_R))
@@ -241,15 +252,83 @@ class ProgramFactory:
             
             # Build full configuration (w_{b,L}, w_{b,R})
             full_config_dict = {**w_l_dict, **dict(w_r_config)}
-            full_config = tuple((node, full_config_dict[node]) for node in nodes)
+            full_config = tuple((node, full_config_dict[node]) for node in all_nodes)
             
-            # for γ ∈ {1, …, ℵᴿ} do
-            for gamma, r_gamma in enumerate(response_type_combinations):
-                # Check if ω = w_{b,R} where ωᵢ := gᵂⁱ(w_{b,L}, r_γ)
-                if ProgramFactory._is_compatible(dag, nodes, r_gamma, full_config):
+            # for γ ∈ {1, …, ℵᴿ} do (γ indexes response type combinations for W_R only)
+            for gamma, r_gamma_wr in enumerate(w_r_response_type_combinations):
+                # Check if ω = w_{b,R} where ωᵢ := gᵂⁱ(w_{b,L}, r_γ) for i ∈ R
+                if ProgramFactory._is_compatible_wr(dag, all_nodes, all_response_types,
+                                                     w_r_nodes, r_gamma_wr, full_config):
                     P_lambda[config_idx, gamma] = 1.0
         
         return P_lambda, p_lambda, cond_prob_index, cond_prob_labels
+    
+    @staticmethod
+    def _is_compatible_wr(dag: DAG, all_nodes: List[Node],
+                         all_response_types: Dict[Node, List[ResponseType]],
+                         w_r_nodes: List[Node],
+                         w_r_response_type_combo: Tuple[ResponseType, ...],
+                         configuration: Tuple[Tuple[Node, int], ...]) -> bool:
+        """
+        Check if response type combination r_γ (for W_R only) produces configuration (w_{b,L}, w_{b,R}).
+        
+        ALGORITHM 1 - Compatibility check (lines within the inner loop):
+        
+        Initialize ω as an empty vector of length |R| (= n − |L|)
+        for i ∈ R do
+            Set ωᵢ := gᵂⁱ(w_{b,L}, r_γ)    # Apply response function
+        end
+        if ω = w_{b,R} then                 # Check if simulated values match
+            [set matrix entries]
+        end
+        
+        This function implements the check "if ω = w_{b,R}":
+        - r_γ contains response types for W_R nodes only
+        - For W_L nodes, we use any response type (they're determined by w_{b,L})
+        - For each W_R node Wⁱ, we compute ωᵢ := gᵂⁱ(Pa(Wⁱ), r_γ)
+        - We check if the simulated ω matches w_{b,R}
+        
+        Args:
+            dag: The causal DAG.
+            all_nodes: Ordered list of all nodes.
+            all_response_types: Response types for all nodes.
+            w_r_nodes: List of nodes in W_R.
+            w_r_response_type_combo: Response type combination r_γ (W_R nodes only).
+            configuration: Target configuration (w_{b,L}, w_{b,R}).
+        
+        Returns:
+            True if ω = w_{b,R} (i.e., r_γ produces the W_R part of configuration), False otherwise.
+        """
+        config_map = dict(configuration)
+        w_r_rt_map = dict(zip(w_r_nodes, w_r_response_type_combo))
+        
+        # For each W_R node, check if ωᵢ := gᵂⁱ(Pa(Wⁱ), r_γ) equals w_{b,R}[i]
+        for node in w_r_nodes:
+            rt = w_r_rt_map[node]  # Response function gᵂⁱ from r_γ
+            target_value = config_map[node]  # Target value from w_{b,R}
+            
+            # Get parent values from configuration (parents can be in W_L or W_R)
+            parents = dag.get_parents(node)
+            
+            if not parents:
+                # Node has no parents: check if gᵂⁱ() = target_value
+                if rt.get(()) != target_value:
+                    return False
+            else:
+                # Build parent configuration: values of Pa(Wⁱ) from (w_{b,L}, w_{b,R})
+                parent_config = tuple((parent, config_map[parent]) 
+                                     for parent in sorted(parents, key=lambda n: n.name))
+                
+                # Check if ωᵢ := gᵂⁱ(Pa(Wⁱ), r_γ) equals target_value
+                try:
+                    if rt.get(parent_config) != target_value:
+                        return False
+                except KeyError:
+                    # Response type doesn't have this parent configuration
+                    return False
+        
+        # All W_R nodes match: ω = w_{b,R}
+        return True
     
     @staticmethod
     def _is_compatible(dag: DAG, nodes: List[Node],

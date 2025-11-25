@@ -59,16 +59,33 @@ class Constraints:
         print("CONSTRAINT SYSTEM FROM ALGORITHM 1")
         print("=" * 80)
         
-        # Print dimensions
+        # Print dimensions and key variables
         if self.P is not None:
-            n_response_types = self.P.shape[1]
-            n_joint_probs = self.P.shape[0]
-            print(f"\nDimensions:")
-            print(f"  Response types (q): {n_response_types}")
-            print(f"  Joint probabilities (p*): {n_joint_probs}")
+            aleph_R = self.P.shape[1]  # ℵᴿ = number of response type combinations
+            B = self.P.shape[0]  # B = number of configurations (w_{b,L}, w_{b,R})
             
+            print(f"\n{'Algorithm 1 Variables':^80}")
+            print("-" * 80)
+            print(f"  ℵᴿ (aleph_R): {aleph_R:>6}  (number of response type combinations)")
+            print(f"  B           : {B:>6}  (number of (W_L, W_R) configurations)")
+            print(f"  dim(q)      : {aleph_R:>6}  (decision variable has {aleph_R} components)")
+            print(f"  dim(p*)     : {B:>6}  (joint probability vector)")
+            
+            # Count unique W_L configurations
+            n_conditions = len(self.Lambda)
+            if n_conditions > 0:
+                # Get dimension of p for one condition
+                first_condition = next(iter(self.Lambda.keys()))
+                dim_p_per_condition = self.Lambda[first_condition].shape[0]
+                print(f"  |W_L configs|: {n_conditions:>6}  (number of distinct W_L configurations)")
+                print(f"  dim(p|W_L)  : {dim_p_per_condition:>6}  (conditional prob. vector per W_L config)")
+            
+            print(f"\n{'Matrix Dimensions':^80}")
+            print("-" * 80)
+            print(f"  P matrix    : {B:>4} × {aleph_R:<4}  (for joint probabilities P * q = p*)")
+            print(f"  P* matrix   : {B:>4} × {aleph_R:<4}  (weighted by p{{W_L}})")
             for condition, matrix in self.Lambda.items():
-                print(f"  Conditional probabilities (p) for {condition}: {matrix.shape[0]}")
+                print(f"  Λ[{condition}]: {matrix.shape[0]:>4} × {matrix.shape[1]:<4}  (for conditional P(W_R|W_L))")
         
         # Print response type assignments
         print(f"\n{'Response Type Assignments (q)':^80}")
@@ -111,8 +128,9 @@ class Constraints:
         print("SUMMARY")
         print("=" * 80)
         if self.P is not None:
+            aleph_R = self.P.shape[1]
             total_constraints = self.P.shape[0] + sum(m.shape[0] for m in self.Lambda.values())
-            print(f"  Total variables (response types): {n_response_types}")
+            print(f"  Total variables (response types): {aleph_R}")
             print(f"  Total constraints: {total_constraints}")
             print(f"    - Joint probability constraints: {self.P.shape[0]}")
             for condition, matrix in self.Lambda.items():
