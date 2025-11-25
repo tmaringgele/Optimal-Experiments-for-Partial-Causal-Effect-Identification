@@ -14,11 +14,15 @@ Classes:
     Node: Represents a node in the causal graph
     ResponseType: Represents response types associated with nodes
     DAG: Represents the directed acyclic graph structure
+    Constraints: Holds the constraint system (matrices P, Lambda, etc.)
+    ProgramFactory: Factory for generating constraints from DAGs (implements Algorithm 1)
 """
 
 from .node import Node
 from .response_type import ResponseType
 from .dag import DAG
+from .constraints import Constraints
+from .program_factory import ProgramFactory
 
-__all__ = ['Node', 'ResponseType', 'DAG']
+__all__ = ['Node', 'ResponseType', 'DAG', 'Constraints', 'ProgramFactory']
 __version__ = '0.1.0'
