@@ -48,12 +48,13 @@ class Constraints:
         self.joint_prob_labels: List[str] = []
         self.conditional_prob_labels: Dict[str, List[str]] = {}
     
-    def print_constraints(self, show_matrices: bool = False) -> None:
+    def print_constraints(self, show_matrices: bool = False, explicit_equations: bool = False) -> None:
         """
         Print the constraint system in a readable format.
         
         Args:
             show_matrices: If True, print full matrices. Otherwise, print equations.
+            explicit_equations: If True, show explicit response type behavior in equations.
         """
         print("=" * 80)
         print("CONSTRAINT SYSTEM FROM ALGORITHM 1")
@@ -104,7 +105,8 @@ class Constraints:
         else:
             print(f"\nAll {len(self.joint_prob_labels)} equations:\n")
             for i, label in enumerate(self.joint_prob_labels):
-                eq = self._format_equation(self.P[i, :], i, max_terms=None)
+                eq = self._format_equation(self.P[i, :], i, max_terms=None, 
+                                          explicit=explicit_equations)
                 print(f"  p*({label}) = {eq}")
         
         # Print conditional probability constraints: P_Lambda * q = p
@@ -120,7 +122,8 @@ class Constraints:
                 labels = self.conditional_prob_labels[condition]
                 print(f"\nAll {len(labels)} equations:\n")
                 for i, label in enumerate(labels):
-                    eq = self._format_equation(matrix[i, :], i, max_terms=None)
+                    eq = self._format_equation(matrix[i, :], i, max_terms=None,
+                                              explicit=explicit_equations)
                     print(f"  p({label}) = {eq}")
         
         # Summary
@@ -137,7 +140,8 @@ class Constraints:
                 print(f"    - Conditional constraints ({condition}): {matrix.shape[0]}")
         print("=" * 80)
     
-    def _format_equation(self, row: np.ndarray, row_idx: int, max_terms: int = None) -> str:
+    def _format_equation(self, row: np.ndarray, row_idx: int, max_terms: int = None,
+                        explicit: bool = False) -> str:
         """
         Format a constraint equation for display.
         
@@ -145,6 +149,7 @@ class Constraints:
             row: Row of coefficient matrix.
             row_idx: Row index.
             max_terms: Maximum number of terms to display. None means show all.
+            explicit: If True, show explicit response type behavior.
         
         Returns:
             Formatted equation string.
@@ -168,7 +173,81 @@ class Constraints:
         if max_terms is not None and len(nonzero_indices) > max_terms:
             terms.append(f"... ({len(nonzero_indices) - max_terms} more terms)")
         
-        return " + ".join(terms) if terms else "0"
+        basic_eq = " + ".join(terms) if terms else "0"
+        
+        # If explicit mode, add the response type behavior descriptions
+        if explicit and nonzero_indices.size > 0:
+            explicit_terms = []
+            for idx in indices_to_show:
+                rt_behavior = self._get_response_type_behavior(idx)
+                explicit_terms.append(f"P({rt_behavior})")
+            
+            if max_terms is not None and len(nonzero_indices) > max_terms:
+                explicit_terms.append(f"... ({len(nonzero_indices) - max_terms} more)")
+            
+            explicit_eq = " + ".join(explicit_terms)
+            return f"{basic_eq} = {explicit_eq}"
+        
+        return basic_eq
+    
+    def _get_response_type_behavior(self, q_index: int) -> str:
+        """
+        Get a human-readable description of the response type behavior.
+        
+        Args:
+            q_index: Index of the response type in q vector.
+        
+        Returns:
+            String describing the response type behavior.
+        """
+        # Find the response type combination for this index
+        rt_combo = None
+        for combo, idx in self.response_type_index.items():
+            if idx == q_index:
+                rt_combo = combo
+                break
+        
+        if rt_combo is None:
+            return f"q[{q_index}]"
+        
+        # Format each response type in the combination
+        behaviors = []
+        for rt in rt_combo:
+            behavior = self._format_response_type(rt)
+            behaviors.append(behavior)
+        
+        return ", ".join(behaviors)
+    
+    def _format_response_type(self, rt: ResponseType) -> str:
+        """
+        Format a single response type as a readable string.
+        
+        Args:
+            rt: The response type to format.
+        
+        Returns:
+            String describing the response type behavior.
+        """
+        node_name = rt.node.name
+        
+        # Get all mappings sorted by parent configuration
+        mappings = sorted(rt.mapping.items(), key=lambda x: str(x[0]))
+        
+        if len(mappings) == 0:
+            return f"{node_name}=?"
+        
+        # Format as "ParentVal -> NodeVal" for each mapping
+        mapping_strs = []
+        for parent_config, output in mappings:
+            if len(parent_config) == 0:
+                # No parents - just show the constant value
+                mapping_strs.append(f"{output}")
+            else:
+                # Show parent values -> output
+                parent_vals = ", ".join(f"{p.name}={v}" for p, v in parent_config)
+                mapping_strs.append(f"({parent_vals})→{output}")
+        
+        return f"{node_name}: [{', '.join(mapping_strs)}]"
     
     def get_constraint_summary(self) -> Dict:
         """
