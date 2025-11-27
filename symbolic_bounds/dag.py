@@ -347,6 +347,117 @@ class DAG:
         lines.append("")
         return "\n".join(lines)
     
+    def draw(self, figsize=(10, 6), node_size=2000, font_size=12, 
+             with_labels=True, title=None):
+        """
+        Draw the DAG using NetworkX and matplotlib.
+        
+        Args:
+            figsize: Figure size as (width, height) tuple.
+            node_size: Size of the nodes in the visualization.
+            font_size: Font size for node labels.
+            with_labels: Whether to show node labels.
+            title: Optional title for the plot.
+        
+        Returns:
+            matplotlib Figure object.
+        """
+        try:
+            import networkx as nx
+            import matplotlib.pyplot as plt
+        except ImportError:
+            raise ImportError(
+                "NetworkX and matplotlib are required for drawing. "
+                "Install with: pip install networkx matplotlib"
+            )
+        
+        # Create NetworkX directed graph
+        G = nx.DiGraph()
+        
+        # Add nodes with partition information
+        for node in self.get_all_nodes():
+            partition = 'L' if node in self.W_L else 'R'
+            G.add_node(node.name, partition=partition)
+        
+        # Add edges
+        for parent, child in self.edges:
+            G.add_edge(parent.name, child.name)
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Separate nodes by partition for coloring
+        w_l_nodes = [node.name for node in self.W_L]
+        w_r_nodes = [node.name for node in self.W_R]
+        
+        # Use hierarchical layout (left to right)
+        pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+        
+        # Try to use a more structured layout if possible
+        try:
+            # Separate into levels based on topological sort
+            pos = {}
+            levels = {}
+            for node in nx.topological_sort(G):
+                # Calculate level as max parent level + 1
+                parent_levels = [levels.get(p, -1) for p in G.predecessors(node)]
+                levels[node] = max(parent_levels) + 1 if parent_levels else 0
+            
+            # Group nodes by level
+            level_groups = {}
+            for node, level in levels.items():
+                level_groups.setdefault(level, []).append(node)
+            
+            # Assign positions: x is level, y is spread within level
+            for level, nodes in level_groups.items():
+                for i, node in enumerate(sorted(nodes)):
+                    y = (i - (len(nodes) - 1) / 2) * 0.5
+                    pos[node] = (level, y)
+        except:
+            # Fall back to spring layout if topological layout fails
+            pass
+        
+        # Draw W_L nodes (left partition) in blue
+        nx.draw_networkx_nodes(G, pos, nodelist=w_l_nodes,
+                              node_color='lightblue', node_size=node_size,
+                              ax=ax, label='W_L')
+        
+        # Draw W_R nodes (right partition) in orange
+        nx.draw_networkx_nodes(G, pos, nodelist=w_r_nodes,
+                              node_color='lightcoral', node_size=node_size,
+                              ax=ax, label='W_R')
+        
+        # Draw edges with clear arrowheads
+        # Use FancyArrowPatch for better arrow rendering
+        nx.draw_networkx_edges(G, pos, ax=ax, 
+                              edge_color='gray',
+                              arrows=True, 
+                              arrowsize=25,
+                              arrowstyle='-|>',
+                              node_size=node_size,
+                              connectionstyle='arc3,rad=0.1',
+                              min_source_margin=15,
+                              min_target_margin=15,
+                              width=2)
+        
+        # Draw labels
+        if with_labels:
+            nx.draw_networkx_labels(G, pos, ax=ax, font_size=font_size,
+                                   font_weight='bold')
+        
+        # Add legend and title
+        ax.legend(loc='upper left', fontsize=font_size-2)
+        if title:
+            ax.set_title(title, fontsize=font_size+2, fontweight='bold')
+        else:
+            ax.set_title(f"DAG with {len(self.W_L)} nodes in W_L, {len(self.W_R)} nodes in W_R",
+                        fontsize=font_size+2, fontweight='bold')
+        
+        ax.axis('off')
+        plt.tight_layout()
+        
+        return fig
+    
     def __repr__(self) -> str:
         nodes_str = ", ".join(node.name for node in self.get_all_nodes())
         edges_str = ", ".join(f"{p.name}->{c.name}" for p, c in self.edges)
