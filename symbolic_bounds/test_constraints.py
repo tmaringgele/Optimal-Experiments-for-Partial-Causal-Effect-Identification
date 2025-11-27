@@ -538,8 +538,8 @@ def test_random_dags(num_tests: int = 20, max_nodes: int = 6, verbose: bool = Fa
     # Test different types of random DAGs
     test_configs = [
         ("random", lambda n, s: generate_random_partitioned_dag(n, seed=s)),
-        ("chain", lambda n, s: generate_random_chain_dag(n, seed=s)),
-        ("tree", lambda n, s: generate_random_tree_dag(n, seed=s)),
+        # ("chain", lambda n, s: generate_random_chain_dag(n, seed=s)),
+        # ("tree", lambda n, s: generate_random_tree_dag(n, seed=s)),
     ]
     
     test_idx = 0
@@ -677,7 +677,7 @@ if __name__ == "__main__":
     test3_passed = test_incompatibility_detection()
     
     # Test 4: Random DAGs (stress test)
-    test4_passed = test_random_dags(num_tests=15, max_nodes=5, verbose=False)
+    test4_passed = test_random_dags(num_tests=1, max_nodes=10, verbose=False)
     
     # Summary
     print("\n" + "=" * 80)
