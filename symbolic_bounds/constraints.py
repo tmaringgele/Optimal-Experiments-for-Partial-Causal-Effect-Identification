@@ -17,11 +17,12 @@ class Constraints:
     - p: conditional probabilities P(W_R | W_L) (conditional on observed W_L values)
     - q: decision variables (response type probabilities)
     
-    In matrix form: P * q = p* and P_Lambda * q = p
+    In matrix form: P * q = p* (element-wise with weights), P_Lambda * q = p
     
     Attributes:
-        P: Matrix relating q to joint probabilities p* = P(W_L, W_R).
-        P_star: Vector of joint probability values p*.
+        P: Matrix relating q to joint probabilities (B × ℵᴿ).
+        P_star: P* matrix (B × ℵᴿ) containing marginal probability weights per Algorithm 1.
+        Lambda_matrix: Λ matrix (B × B diagonal) containing marginal probabilities P(W_L) per Algorithm 1.
         Lambda: Dictionary of matrices relating q to conditional probabilities p = P(W_R | W_L).
         p_Lambda: Dictionary of conditional probability vectors p.
         response_type_index: Mapping from response types to indices in q vector.
@@ -32,7 +33,8 @@ class Constraints:
     def __init__(self):
         """Initialize empty constraint system."""
         self.P: np.ndarray = None  # Matrix for joint probabilities P(W_L, W_R)
-        self.P_star: np.ndarray = None  # Vector of joint probability values
+        self.P_star: np.ndarray = None  # P* matrix (B × ℵᴿ) per Algorithm 1
+        self.Lambda_matrix: np.ndarray = None  # Λ matrix (B × B diagonal) per Algorithm 1
         
         # For conditional distributions P(W_R | W_L)
         self.Lambda: Dict[str, np.ndarray] = {}  # Matrices for each W_L configuration
@@ -83,8 +85,11 @@ class Constraints:
             
             print(f"\n{'Matrix Dimensions':^80}")
             print("-" * 80)
-            print(f"  P matrix    : {B:>4} × {aleph_R:<4}  (for joint probabilities P * q = p*)")
-            print(f"  P* matrix   : {B:>4} × {aleph_R:<4}  (weighted by p{{W_L}})")
+            print(f"  P matrix    : {B:>4} × {aleph_R:<4}  (Algorithm 1: P matrix)")
+            if self.P_star is not None:
+                print(f"  P* matrix   : {self.P_star.shape[0]:>4} × {self.P_star.shape[1]:<4}  (Algorithm 1: P* matrix with p{{W_L}} weights)")
+            if self.Lambda_matrix is not None:
+                print(f"  Λ matrix    : {self.Lambda_matrix.shape[0]:>4} × {self.Lambda_matrix.shape[1]:<4}  (Algorithm 1: Λ diagonal matrix)")
             for condition, matrix in self.Lambda.items():
                 print(f"  Λ[{condition}]: {matrix.shape[0]:>4} × {matrix.shape[1]:<4}  (for conditional P(W_R|W_L))")
         
@@ -100,8 +105,11 @@ class Constraints:
         if show_matrices and self.P is not None:
             print("\nMatrix P:")
             print(self.P)
-            print("\nVector p*:")
+            print("\nMatrix P* (with marginal probability weights):")
             print(self.P_star)
+            if self.Lambda_matrix is not None:
+                print("\nMatrix Λ (diagonal with marginal probabilities P(W_L)):")
+                print(self.Lambda_matrix)
         else:
             print(f"\nAll {len(self.joint_prob_labels)} equations:\n")
             for i, label in enumerate(self.joint_prob_labels):
