@@ -411,3 +411,233 @@ class ProgramFactory:
         
         # All nodes match: ω = w_{b,R}
         return True
+    
+    @staticmethod
+    def writeRung2(dag: DAG, Y: Set[Node], X: Set[Node], 
+                   Y_values: Tuple[int, ...], X_values: Tuple[int, ...]) -> np.ndarray:
+        """
+        Construct objective function vector α for causal query P(Y=y | do(X=x)).
+        
+        This implements the objective function construction for Rung 2 (interventional) queries:
+        - Y, X ⊆ W_R (both are subsets of the right partition)
+        - Y ∩ X = ∅ (Y and X are disjoint)
+        - Query: P(Y=y | do(X=x)) can be expressed as α^T q
+        
+        ALGORITHM OVERVIEW (based on Algorithm 2):
+        The query P(Y=y | do(X=x)) under the structural causal model can be written as:
+            P(Y=y | do(X=x)) = ∑_{γ: r_γ compatible} q_γ = α^T q
+        
+        where r_γ is "compatible" if:
+        1. Under intervention do(X=x), we override X nodes to value x
+        2. The response functions r_γ produce Y=y (for all possible W_L configurations)
+        
+        DIMENSIONS:
+        - q has dimension ℵᴿ (number of response type combinations for ALL of W_R)
+        - α has dimension ℵᴿ (same as q)
+        - Each r_γ includes response types for ALL nodes in W_R (including X)
+        - Under do(X=x), we simply override X values in simulation, but r_γ still 
+          includes response types for X (they just don't affect the outcome)
+        
+        The coefficient vector α has:
+        - α_γ = 1 if response type r_γ produces Y=y under do(X=x) for ALL W_L values
+        - α_γ = 0 otherwise
+        
+        Args:
+            dag: The causal DAG with partition (W_L, W_R).
+            Y: Set of target/outcome nodes in W_R.
+            X: Set of intervention nodes in W_R.
+            Y_values: Tuple of target values for Y nodes (in sorted order by node name).
+            X_values: Tuple of intervention values for X nodes (in sorted order by node name).
+        
+        Returns:
+            Vector α of length ℵᴿ where α^T q = P(Y=y | do(X=x)).
+            Note: ℵᴿ = |supp(R_R)| where R_R are response types for ALL nodes in W_R.
+            
+        Raises:
+            ValueError: If Y or X are not subsets of W_R, or if Y ∩ X ≠ ∅.
+        
+        Example:
+            >>> # For query P(Y=1 | do(X=1)) on DAG with X -> Y in W_R
+            >>> dag = DAG()
+            >>> X = dag.add_node('X', support={0,1}, partition='R')
+            >>> Y = dag.add_node('Y', support={0,1}, partition='R')
+            >>> dag.add_edge(X, Y)
+            >>> dag.generate_all_response_types()
+            >>> alpha = ProgramFactory.writeRung2(dag, {Y}, {X}, (1,), (1,))
+            >>> # alpha[γ] = 1 iff response type r_γ produces Y=1 when we set X=1
+            >>> # alpha has same dimension as q (both are length ℵᴿ = 8 in this case)
+        """
+        # Validate inputs
+        if not Y.issubset(dag.W_R):
+            raise ValueError(f"Y must be a subset of W_R. Got nodes: {[n.name for n in Y]}")
+        if not X.issubset(dag.W_R):
+            raise ValueError(f"X must be a subset of W_R. Got nodes: {[n.name for n in X]}")
+        if not Y.isdisjoint(X):
+            raise ValueError(f"Y and X must be disjoint. Overlap: {[n.name for n in Y & X]}")
+        
+        # Get response types for W_R nodes
+        all_response_types = dag.generate_all_response_types()
+        w_r_nodes = sorted(dag.W_R, key=lambda n: n.name)
+        w_l_nodes = sorted(dag.W_L, key=lambda n: n.name)
+        
+        w_r_response_type_lists = [all_response_types[node] for node in w_r_nodes]
+        w_r_response_type_combinations = list(itertools.product(*w_r_response_type_lists))
+        
+        aleph_R = len(w_r_response_type_combinations)
+        
+        # Sort V and Z nodes for consistent ordering
+        Y_nodes = sorted(Y, key=lambda n: n.name)
+        X_nodes = sorted(X, key=lambda n: n.name)
+        
+        # Validate value counts
+        if len(Y_values) != len(Y_nodes):
+            raise ValueError(f"Expected {len(Y_nodes)} values for Y, got {len(Y_values)}")
+        if len(X_values) != len(X_nodes):
+            raise ValueError(f"Expected {len(X_nodes)} values for X, got {len(X_values)}")
+        
+        # Initialize coefficient vector
+        alpha = np.zeros(aleph_R)
+        
+        # Create intervention and target configurations
+        X_config = dict(zip(X_nodes, X_values))
+        Y_target = dict(zip(Y_nodes, Y_values))
+        
+        # For each response type combination γ
+        for gamma, r_gamma in enumerate(w_r_response_type_combinations):
+            # Create mapping from W_R nodes to their response types
+            rt_map = dict(zip(w_r_nodes, r_gamma))
+            
+            # Check if this response type produces Y=y under do(X=x)
+            # KEY INSIGHT: Under intervention do(X=x), we:
+            # 1. Ignore the response types for X nodes (they're overridden by intervention)
+            # 2. Use response types for non-X nodes to simulate their values
+            # 3. Check if Y nodes take value y
+            
+            # We need to check this holds for ALL possible W_L configurations
+            # (marginalized over W_L)
+            
+            # Generate all possible W_L configurations
+            if w_l_nodes:
+                w_l_supports = [node.support for node in w_l_nodes]
+                w_l_configs = list(itertools.product(*w_l_supports))
+            else:
+                w_l_configs = [()]  # Empty configuration if W_L is empty
+            
+            # Check if r_γ produces Y=y under do(X=x) for ALL W_L configurations
+            compatible_for_all = True
+            
+            for w_l_config_values in w_l_configs:
+                # Build W_L configuration
+                if w_l_nodes:
+                    w_l_config = dict(zip(w_l_nodes, w_l_config_values))
+                else:
+                    w_l_config = {}
+                
+                # Simulate W_R values under intervention do(X=x) and given W_L configuration
+                simulated_values = {}
+                
+                # Set intervention values: X = x (this overrides the response types for X)
+                for node in X_nodes:
+                    simulated_values[node] = X_config[node]
+                
+                # Compute topological order for W_R nodes to evaluate response functions
+                topo_order = ProgramFactory._topological_sort_wr(dag, w_r_nodes)
+                
+                # Simulate values in topological order
+                simulation_failed = False
+                for node in topo_order:
+                    if node in X_nodes:
+                        # Already set by intervention
+                        continue
+                    
+                    # Get response function for this node
+                    rt = rt_map[node]
+                    
+                    # Get parents of this node (could be from W_L or W_R)
+                    parents = sorted(dag.get_parents(node), key=lambda n: n.name)
+                    
+                    if not parents:
+                        # No parents: use response type's fixed value
+                        simulated_values[node] = rt.get(())
+                    else:
+                        # Build parent configuration from W_L values and simulated W_R values
+                        parent_config = []
+                        for parent in parents:
+                            if parent in w_l_nodes:
+                                # Parent is in W_L - use given W_L configuration
+                                parent_config.append((parent, w_l_config[parent]))
+                            elif parent in w_r_nodes:
+                                # Parent is in W_R - use simulated/intervened value
+                                if parent in simulated_values:
+                                    parent_config.append((parent, simulated_values[parent]))
+                                else:
+                                    # Parent not yet computed (shouldn't happen with correct topo order)
+                                    simulation_failed = True
+                                    break
+                        
+                        if simulation_failed:
+                            break
+                        
+                        # Evaluate response function
+                        parent_config_tuple = tuple(parent_config)
+                        try:
+                            simulated_values[node] = rt.get(parent_config_tuple)
+                        except KeyError:
+                            simulation_failed = True
+                            break
+                
+                if simulation_failed:
+                    compatible_for_all = False
+                    break
+                
+                # Check if Y nodes have the target values
+                for node in Y_nodes:
+                    if node not in simulated_values or simulated_values[node] != Y_target[node]:
+                        compatible_for_all = False
+                        break
+                
+                if not compatible_for_all:
+                    break
+            
+            # If compatible for all W_L configurations, set α_γ = 1
+            if compatible_for_all:
+                alpha[gamma] = 1.0
+        
+        return alpha
+    
+    @staticmethod
+    def _topological_sort_wr(dag: DAG, w_r_nodes: List[Node]) -> List[Node]:
+        """
+        Compute topological ordering of W_R nodes.
+        
+        Args:
+            dag: The causal DAG.
+            w_r_nodes: List of nodes in W_R.
+        
+        Returns:
+            List of nodes in topological order.
+        """
+        from collections import deque
+        
+        # Compute in-degrees (counting only edges within W_R)
+        in_degree = {node: 0 for node in w_r_nodes}
+        for parent, child in dag.edges:
+            if parent in w_r_nodes and child in w_r_nodes:
+                in_degree[child] += 1
+        
+        # Start with nodes that have no W_R parents
+        queue = deque([node for node in w_r_nodes if in_degree[node] == 0])
+        topo_order = []
+        
+        while queue:
+            node = queue.popleft()
+            topo_order.append(node)
+            
+            # Reduce in-degree of children
+            for parent, child in dag.edges:
+                if parent == node and child in w_r_nodes:
+                    in_degree[child] -= 1
+                    if in_degree[child] == 0:
+                        queue.append(child)
+        
+        return topo_order
