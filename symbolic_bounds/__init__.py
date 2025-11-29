@@ -27,7 +27,13 @@ from .dag import DAG
 from .constraints import Constraints
 from .program_factory import ProgramFactory
 from .linear_program import LinearProgram, SymbolicParameter
+from .vertex_enumeration import (
+    VertexEnumerator, 
+    BoundResult, 
+    compute_causal_bounds
+)
 
 __all__ = ['Node', 'ResponseType', 'DAG', 'Constraints', 'ProgramFactory', 
-           'LinearProgram', 'SymbolicParameter']
+           'LinearProgram', 'SymbolicParameter',
+           'VertexEnumerator', 'BoundResult', 'compute_causal_bounds']
 __version__ = '0.1.0'
