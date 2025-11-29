@@ -10,6 +10,7 @@ from .dag import DAG
 from .node import Node
 from .response_type import ResponseType
 from .constraints import Constraints
+from .linear_program import LinearProgram, SymbolicParameter
 
 
 class ProgramFactory:
@@ -641,3 +642,191 @@ class ProgramFactory:
                         queue.append(child)
         
         return topo_order
+    
+    @staticmethod
+    def build_lp(dag: DAG, 
+                 objective_Y: Set[Node], 
+                 intervention_X: Set[Node],
+                 Y_values: Tuple[int, ...],
+                 X_values: Tuple[int, ...],
+                 sense: str = 'max') -> LinearProgram:
+        """
+        Build a complete linear program for causal effect bounds with symbolic parameters.
+        
+        This constructs the LP:
+            minimize/maximize: α^T q
+            subject to:       P q = p  (conditional probabilities, symbolic)
+                             q >= 0
+                             sum(q) = 1
+        
+        where:
+        - q: decision variable (response type probabilities), dimension ℵᴿ
+        - α: objective function from writeRung2 (represents P(Y=y | do(X=x)))
+        - P: constraint matrix from write_constraints
+        - p: symbolic RHS vector containing conditional probabilities P(W_R | W_L)
+        
+        The RHS vector p contains symbolic parameters for all conditional probabilities
+        P(W_R | W_L) for different configurations of W_L and W_R. This enables:
+        1. Symbolic vertex enumeration to compute bounds as functions of observables
+        2. Parametric optimization for sensitivity analysis
+        3. Computing tight bounds without fixing numerical values
+        
+        Args:
+            dag: The causal DAG with partition (W_L, W_R)
+            objective_Y: Set of outcome nodes Y for the causal query
+            intervention_X: Set of intervention nodes X for do(X=x)
+            Y_values: Tuple of target values for Y nodes (one per node in objective_Y)
+            X_values: Tuple of intervention values for X nodes (one per node in intervention_X)
+            sense: 'max' or 'min' for optimization direction
+        
+        Returns:
+            LinearProgram object with symbolic RHS ready for vertex enumeration
+        
+        Example:
+            >>> dag = DAG()
+            >>> Z = dag.add_node('Z', support={0,1}, partition='L')
+            >>> X = dag.add_node('X', support={0,1}, partition='R')
+            >>> Y = dag.add_node('Y', support={0,1}, partition='R')
+            >>> dag.add_edge(Z, X)
+            >>> dag.add_edge(X, Y)
+            >>> dag.generate_all_response_types()
+            >>> 
+            >>> # Build LP for upper bound on P(Y=1 | do(X=1))
+            >>> lp = ProgramFactory.build_lp(dag, {Y}, {X}, (1,), (1,), sense='max')
+            >>> lp.print_lp()
+            >>> 
+            >>> # The RHS vector contains symbolic parameters like:
+            >>> # p[0] = P(X=0,Y=0 | Z=0)
+            >>> # p[1] = P(X=0,Y=1 | Z=0)
+            >>> # ... etc.
+        """
+        # Step 1: Generate constraint system
+        constraints = ProgramFactory.write_constraints(dag)
+        
+        # Step 2: Generate objective function
+        alpha = ProgramFactory.writeRung2(dag, objective_Y, intervention_X, 
+                                         Y_values, X_values)
+        
+        # Step 3: Create LinearProgram object
+        lp = LinearProgram()
+        lp.set_objective(alpha, sense=sense)
+        lp.response_type_labels = constraints.response_type_labels
+        
+        # Step 4: Build constraint matrix and symbolic RHS from P matrix
+        # We use the conditional probability constraints P(W_R | W_L)
+        
+        w_l_nodes = sorted(list(dag.W_L), key=lambda n: n.name)
+        w_r_nodes = sorted(list(dag.W_R), key=lambda n: n.name)
+        
+        if len(w_l_nodes) == 0:
+            # Unconditional case: no W_L nodes, use joint probabilities
+            # Constraints: P q = p where p = P(W_R)
+            constraint_matrix = constraints.P
+            rhs_symbolic = []
+            constraint_labels = []
+            
+            for config, idx in constraints.joint_prob_index.items():
+                # Create symbolic parameter for P(W_R)
+                param_name = _format_config_prob(config, conditional=False)
+                param = SymbolicParameter(
+                    name=param_name,
+                    w_r_config=config,
+                    w_l_config=(),
+                    index=len(lp.rhs_params)
+                )
+                lp.register_parameter(param)
+                
+                rhs_symbolic.append(param_name)
+                constraint_labels.append(f"P({_format_config(config)})")
+            
+            lp.add_constraints_from_matrix(constraint_matrix, rhs_symbolic, constraint_labels)
+        
+        else:
+            # Conditional case: constraints for each W_L configuration
+            # For each w_l config: P_wl q = p_wl where p_wl = P(W_R | W_L = w_l)
+            
+            for condition_key in constraints.Lambda.keys():
+                constraint_matrix = constraints.Lambda[condition_key]
+                rhs_symbolic = []
+                constraint_labels = []
+                
+                # Parse W_L configuration from condition_key
+                w_l_config = _parse_condition_key(condition_key, w_l_nodes)
+                
+                # Create symbolic parameters for each P(W_R | W_L = w_l)
+                for w_r_config, idx in constraints.conditional_prob_index[condition_key].items():
+                    param_name = _format_conditional_prob(w_r_config, w_l_config)
+                    param = SymbolicParameter(
+                        name=param_name,
+                        w_r_config=w_r_config,
+                        w_l_config=w_l_config,
+                        index=len(lp.rhs_params)
+                    )
+                    lp.register_parameter(param)
+                    
+                    rhs_symbolic.append(param_name)
+                    constraint_labels.append(
+                        f"P({_format_config(w_r_config)} | {_format_config(w_l_config)})"
+                    )
+                
+                lp.add_constraints_from_matrix(constraint_matrix, rhs_symbolic, 
+                                              constraint_labels)
+        
+        return lp
+
+
+def _format_config(config: Tuple[Tuple[Node, int], ...]) -> str:
+    """Format a configuration as a string like 'X=0,Y=1'."""
+    return ",".join([f"{node.name}={val}" for node, val in config])
+
+
+def _format_config_prob(config: Tuple[Tuple[Node, int], ...], 
+                       conditional: bool = False) -> str:
+    """Format a probability parameter name like 'p_X=0,Y=1'."""
+    config_str = ",".join([f"{node.name}={val}" for node, val in config])
+    return f"p_{config_str}"
+
+
+def _format_conditional_prob(w_r_config: Tuple[Tuple[Node, int], ...],
+                             w_l_config: Tuple[Tuple[Node, int], ...]) -> str:
+    """Format a conditional probability parameter like 'p_X=0,Y=1|Z=0'."""
+    w_r_str = ",".join([f"{node.name}={val}" for node, val in w_r_config])
+    w_l_str = ",".join([f"{node.name}={val}" for node, val in w_l_config])
+    return f"p_{w_r_str}|{w_l_str}"
+
+
+def _parse_condition_key(condition_key: str, w_l_nodes: List[Node]) -> Tuple[Tuple[Node, int], ...]:
+    """
+    Parse a condition key like 'W_L=(Z=0)' or 'W_L=(Z1=0, Z2=1)' back into tuple format.
+    
+    Args:
+        condition_key: String like 'W_L=(Z=0)' or 'W_L=(Z1=0, Z2=1)'
+        w_l_nodes: List of W_L nodes
+    
+    Returns:
+        Tuple of (Node, value) pairs
+    """
+    # Extract the part inside parentheses
+    # Format: "W_L=(Z=0)" or "W_L=(Z1=0, Z2=1)"
+    if '(' in condition_key and ')' in condition_key:
+        inner = condition_key[condition_key.index('(')+1:condition_key.index(')')]
+    else:
+        inner = condition_key
+    
+    # Parse assignments
+    assignments = inner.split(', ')  # Note: space after comma in labels
+    config = []
+    
+    for assignment in assignments:
+        parts = assignment.split('=')
+        if len(parts) == 2:
+            node_name, value_str = parts
+            node_name = node_name.strip()
+            value = int(value_str.strip())
+            
+            # Find matching node
+            node = next((n for n in w_l_nodes if n.name == node_name), None)
+            if node:
+                config.append((node, value))
+    
+    return tuple(sorted(config, key=lambda x: x[0].name))
