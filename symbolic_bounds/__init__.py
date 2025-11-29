@@ -32,8 +32,16 @@ from .vertex_enumeration import (
     BoundResult, 
     compute_causal_bounds
 )
+from .symbolic_vertex_enum import (
+    SymbolicVertexEnumerator,
+    SymbolicVertex,
+    SymbolicBound,
+    compute_symbolic_causal_bounds
+)
 
 __all__ = ['Node', 'ResponseType', 'DAG', 'Constraints', 'ProgramFactory', 
            'LinearProgram', 'SymbolicParameter',
-           'VertexEnumerator', 'BoundResult', 'compute_causal_bounds']
+           'VertexEnumerator', 'BoundResult', 'compute_causal_bounds',
+           'SymbolicVertexEnumerator', 'SymbolicVertex', 'SymbolicBound',
+           'compute_symbolic_causal_bounds']
 __version__ = '0.1.0'
