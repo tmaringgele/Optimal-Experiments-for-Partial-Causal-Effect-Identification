@@ -26,6 +26,7 @@ from .program_factory import ProgramFactory
 from .joint_distribution import JointDistribution
 from .scm import SCM
 from .linear_program import LinearProgram
+from .data_generator import DataGenerator
 
 __all__ = [
     'Node', 
@@ -35,6 +36,7 @@ __all__ = [
     'ProgramFactory',
     'JointDistribution',
     'SCM',
-    'LinearProgram'
+    'LinearProgram',
+    'DataGenerator'
 ]
 __version__ = '0.1.0'
