@@ -10,6 +10,8 @@ from .dag import DAG
 from .node import Node
 from .response_type import ResponseType
 from .constraints import Constraints
+from .scm import SCM
+from .linear_program import LinearProgram
 
 
 class ProgramFactory:
@@ -641,3 +643,135 @@ class ProgramFactory:
                         queue.append(child)
         
         return topo_order
+    
+    @staticmethod
+    def write_LP(
+        scm: SCM,
+        Y: Set[Node],
+        X: Set[Node],
+        Y_values: Tuple[int, ...],
+        X_values: Tuple[int, ...]
+    ) -> LinearProgram:
+        """
+        Construct a linear program for computing bounds on P(Y=y | do(X=x)).
+        
+        This function creates the full LP structure:
+            minimize/maximize    α^T q
+            subject to           P q = p
+                                 q ≥ 0
+                                 1^T q = 1
+        
+        Where:
+        - α is the objective vector from writeRung2 (for the query P(Y=y | do(X=x)))
+        - P is the constraint matrix from write_constraints (Algorithm 1)
+        - p is the right-hand-side vector derived from the observed joint distribution
+        - q is the decision variable (response type probabilities)
+        
+        The constraints q ≥ 0 and 1^T q = 1 are implicit (probability constraints).
+        
+        Args:
+            scm: Structural Causal Model (DAG + observed joint distribution)
+            Y: Set of outcome nodes (must be in W_R)
+            X: Set of intervention nodes (must be in W_R)
+            Y_values: Target values for Y nodes (tuple of ints)
+            X_values: Intervention values for X nodes (tuple of ints)
+        
+        Returns:
+            LinearProgram object containing objective, constraints, and RHS
+            
+        Raises:
+            ValueError: If Y or X nodes are not in the DAG or not in W_R
+        """
+        dag = scm.dag
+        
+        # Validate that Y and X are in the DAG
+        all_nodes = dag.get_all_nodes()
+        if not Y.issubset(all_nodes):
+            missing = Y - all_nodes
+            raise ValueError(f"Y nodes not in DAG: {[n.name for n in missing]}")
+        
+        if not X.issubset(all_nodes):
+            missing = X - all_nodes
+            raise ValueError(f"X nodes not in DAG: {[n.name for n in missing]}")
+        
+        # Validate that Y and X are in W_R (required by writeRung2)
+        if not Y.issubset(dag.W_R):
+            not_in_wr = Y - dag.W_R
+            raise ValueError(f"Y nodes must be in W_R: {[n.name for n in not_in_wr]}")
+        
+        if not X.issubset(dag.W_R):
+            not_in_wr = X - dag.W_R
+            raise ValueError(f"X nodes must be in W_R: {[n.name for n in not_in_wr]}")
+        
+        # Step 1: Generate objective vector α using writeRung2
+        # This represents the query P(Y=y | do(X=x))
+        alpha = ProgramFactory.writeRung2(dag, Y, X, Y_values, X_values)
+        
+        # Step 2: Generate constraint matrix P using write_constraints
+        # This gives us the mapping from response types to observations
+        constraints = ProgramFactory.write_constraints(dag)
+        P = constraints.P  # Use only P matrix, not P* or Λ
+        
+        # Step 3: Construct right-hand-side vector p from observed joint
+        # The rows of P correspond to configurations (w_L, w_R)
+        # We need to extract the probability for each configuration from observedJoint
+        
+        # Get the ordered list of configurations from constraints
+        p = np.zeros(len(constraints.joint_prob_labels))
+        
+        for i, config_label in enumerate(constraints.joint_prob_labels):
+            # Parse the configuration label to extract node assignments
+            # Format: "W_L=(X=0,Z=1), W_R=(Y=0)"
+            config_dict = ProgramFactory._parse_config_label(config_label, dag)
+            
+            # Convert to frozenset of (Node, value) tuples
+            config_set = set((node, value) for node, value in config_dict.items())
+            
+            # Get probability from observed joint
+            p[i] = scm.observedJoint.get_probability(config_set)
+        
+        # Verify that probabilities sum to 1
+        if not abs(np.sum(p) - 1.0) < 1e-10:
+            raise ValueError(f"RHS probabilities must sum to 1, got {np.sum(p)}")
+        
+        # Step 4: Create LinearProgram object
+        lp = LinearProgram(
+            objective=alpha,
+            constraint_matrix=P,
+            rhs=p,
+            variable_labels=constraints.response_type_labels,
+            constraint_labels=constraints.joint_prob_labels,
+            is_minimization=True  # Default to minimization for lower bound
+        )
+        
+        return lp
+    
+    @staticmethod
+    def _parse_config_label(config_label: str, dag: DAG) -> Dict[Node, int]:
+        """
+        Parse a configuration label string to extract node assignments.
+        
+        Example: "W_L=(X=0,Z=1), W_R=(Y=0)" -> {X: 0, Z: 1, Y: 0}
+        
+        Args:
+            config_label: Configuration label string
+            dag: DAG to look up node objects
+        
+        Returns:
+            Dictionary mapping Node objects to their values
+        """
+        import re
+        
+        config_dict = {}
+        
+        # Find all "NodeName=value" patterns
+        pattern = r'(\w+)=(\d+)'
+        matches = re.findall(pattern, config_label)
+        
+        for node_name, value_str in matches:
+            if node_name in dag.nodes:
+                node = dag.nodes[node_name]
+                value = int(value_str)
+                config_dict[node] = value
+        
+        return config_dict

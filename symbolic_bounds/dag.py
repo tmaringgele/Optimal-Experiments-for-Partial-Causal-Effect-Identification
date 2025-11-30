@@ -132,6 +132,16 @@ class DAG:
         """
         return set(self._nodes.values())
     
+    @property
+    def nodes(self) -> Dict[str, Node]:
+        """
+        Get the dictionary of nodes (name -> Node).
+        
+        Returns:
+            Dictionary mapping node names to Node objects.
+        """
+        return self._nodes
+    
     def set_partition(self, node: Node, partition: str) -> None:
         """
         Assign a node to a partition (W_L or W_R).
