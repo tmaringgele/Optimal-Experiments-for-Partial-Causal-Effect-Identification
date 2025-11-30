@@ -1,49 +1,56 @@
 """
 Structural Causal Model (SCM) class.
 
-An SCM combines a DAG (representing the causal structure) with an
-observed joint probability distribution.
+An SCM combines a DAG (representing the causal structure) with a
+DataGenerator for producing observed distributions.
 """
 
 from .dag import DAG
-from .joint_distribution import JointDistribution
-from typing import Set
+from typing import Dict, FrozenSet, Tuple, TYPE_CHECKING
 from .node import Node
+
+if TYPE_CHECKING:
+    from .data_generator import DataGenerator
 
 
 class SCM:
     """
-    Structural Causal Model combining causal structure and observations.
+    Structural Causal Model combining causal structure and data generation.
     
     An SCM consists of:
     - A DAG representing the causal structure
-    - An observed joint distribution over all nodes in the DAG
-    
-    The observed joint distribution must be valid (cover all configurations
-    and sum to 1).
+    - A DataGenerator that produces causally consistent distributions
     
     Attributes:
         dag: The causal DAG
-        observedJoint: The observed joint probability distribution
+        data_generator: The DataGenerator for producing observed distributions
     """
     
-    def __init__(self, dag: DAG, observedJoint: JointDistribution):
+    def __init__(self, dag: DAG, data_generator: 'DataGenerator'):
         """
-        Create an SCM with a DAG and observed joint distribution.
+        Create an SCM with a DAG and DataGenerator.
         
         Args:
             dag: Causal DAG
-            observedJoint: Observed joint probability distribution
+            data_generator: DataGenerator for this DAG
             
         Raises:
-            ValueError: If the joint distribution is not valid for the DAG
+            ValueError: If the DataGenerator's DAG doesn't match
         """
-        self.dag = dag
-        self.observedJoint = observedJoint
+        if data_generator.dag is not dag:
+            raise ValueError("DataGenerator must be initialized with the same DAG")
         
-        # Validate that the joint distribution covers all nodes in the DAG
-        all_nodes = dag.get_all_nodes()
-        self.observedJoint.validate(all_nodes)
+        self.dag = dag
+        self.data_generator = data_generator
+    
+    def getObservedJoint(self) -> Dict[FrozenSet[Tuple[Node, int]], float]:
+        """
+        Get the observed joint distribution by invoking the DataGenerator.
+        
+        Returns:
+            Dictionary mapping frozenset of (Node, int) tuples to probability
+        """
+        return self.data_generator.computeObservedJoint()
     
     def print_scm(self) -> None:
         """Print a summary of the SCM."""
@@ -57,7 +64,15 @@ class SCM:
         print(f"  W_R (right partition): {', '.join(n.name for n in sorted(self.dag.W_R, key=lambda x: x.name))}")
         
         print(f"\n  Edges:")
-        for parent_name, child_name in sorted(self.dag.edges):
-            print(f"    {parent_name} -> {child_name}")
+        for parent, child in sorted(self.dag.edges, key=lambda e: (e[0].name, e[1].name)):
+            print(f"    {parent.name} -> {child.name}")
         
-        self.observedJoint.print_distribution("Observed Joint Distribution")
+        print("\n  Data Generation:")
+        print(f"    Using DataGenerator with sampled response type distribution")
+        
+        # Print observed joint
+        observed = self.getObservedJoint()
+        print("\n  Observed Joint Distribution:")
+        for config, prob in sorted(observed.items(), key=lambda x: sorted((n.name, v) for n, v in x[0])):
+            config_str = ", ".join(f"{n.name}={v}" for n, v in sorted(config, key=lambda x: x[0].name))
+            print(f"    P({config_str}) = {prob:.6f}")

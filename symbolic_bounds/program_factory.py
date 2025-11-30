@@ -12,6 +12,7 @@ from .response_type import ResponseType
 from .constraints import Constraints
 from .scm import SCM
 from .linear_program import LinearProgram
+from typing import FrozenSet
 
 
 class ProgramFactory:
@@ -714,7 +715,10 @@ class ProgramFactory:
         
         # Step 3: Construct right-hand-side vector p from observed joint
         # The rows of P correspond to configurations (w_L, w_R)
-        # We need to extract the probability for each configuration from observedJoint
+        # We need to extract the probability for each configuration from observed joint
+        
+        # Get observed joint distribution as dict
+        observed_joint = scm.getObservedJoint()
         
         # Get the ordered list of configurations from constraints
         p = np.zeros(len(constraints.joint_prob_labels))
@@ -725,20 +729,26 @@ class ProgramFactory:
             config_dict = ProgramFactory._parse_config_label(config_label, dag)
             
             # Convert to frozenset of (Node, value) tuples
-            config_set = set((node, value) for node, value in config_dict.items())
+            config_key: FrozenSet[Tuple[Node, int]] = frozenset((node, value) for node, value in config_dict.items())
             
-            # Get probability from observed joint
-            p[i] = scm.observedJoint.get_probability(config_set)
+            # Get probability from observed joint dict
+            p[i] = observed_joint.get(config_key, 0.0)
         
         # Verify that probabilities sum to 1
         if not abs(np.sum(p) - 1.0) < 1e-10:
             raise ValueError(f"RHS probabilities must sum to 1, got {np.sum(p)}")
         
         # Step 4: Create LinearProgram object
+        # Extract q_labels from response_type_index (sorted by index)
+        q_labels = [None] * len(constraints.response_type_index)
+        for rt_combo, idx in constraints.response_type_index.items():
+            q_labels[idx] = rt_combo
+        
         lp = LinearProgram(
             objective=alpha,
             constraint_matrix=P,
             rhs=p,
+            q_labels=q_labels,
             variable_labels=constraints.response_type_labels,
             constraint_labels=constraints.joint_prob_labels,
             is_minimization=True  # Default to minimization for lower bound

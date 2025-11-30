@@ -9,12 +9,11 @@ The key insight is that each response-type configuration produces a deterministi
 observable outcome, and the observed distribution is a mixture over these deterministic worlds.
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, FrozenSet, Set
 import numpy as np
 from .dag import DAG
 from .node import Node
 from .response_type import ResponseType
-from .joint_distribution import JointDistribution
 from itertools import product
 
 
@@ -99,7 +98,7 @@ class DataGenerator:
         
         return distribution
     
-    def computeObservedJoint(self) -> JointDistribution:
+    def computeObservedJoint(self) -> Dict[FrozenSet[Tuple[Node, int]], float]:
         """
         Compute the observed joint distribution P(V) from the response type distribution.
         
@@ -118,12 +117,12 @@ class DataGenerator:
         4. Accumulate probabilities for each observable outcome
         
         Returns:
-            JointDistribution object with the observed joint probabilities
+            Dictionary mapping frozenset of (Node, int) tuples to probability
         """
         all_nodes = sorted(self.dag.get_all_nodes(), key=lambda n: n.name)
         
-        # Create the observed joint distribution
-        observed_joint = JointDistribution()
+        # Create the observed joint distribution as a dict
+        observed_joint: Dict[FrozenSet[Tuple[Node, int]], float] = {}
         
         # Get topological order for simulation
         topo_order = self._topological_sort(all_nodes)
@@ -158,8 +157,10 @@ class DataGenerator:
             config = frozenset((node, value) for node, value in simulated_values.items())
             
             # Accumulate probability for this observable configuration
-            current_prob = observed_joint.get_probability(config)
-            observed_joint.set_probability(config, current_prob + rt_prob)
+            if config in observed_joint:
+                observed_joint[config] += rt_prob
+            else:
+                observed_joint[config] = rt_prob
         
         return observed_joint
     

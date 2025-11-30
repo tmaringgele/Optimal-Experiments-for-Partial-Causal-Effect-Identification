@@ -23,7 +23,6 @@ from .response_type import ResponseType
 from .dag import DAG
 from .constraints import Constraints
 from .program_factory import ProgramFactory
-from .joint_distribution import JointDistribution
 from .scm import SCM
 from .linear_program import LinearProgram
 from .data_generator import DataGenerator
@@ -34,7 +33,6 @@ __all__ = [
     'DAG', 
     'Constraints', 
     'ProgramFactory',
-    'JointDistribution',
     'SCM',
     'LinearProgram',
     'DataGenerator'

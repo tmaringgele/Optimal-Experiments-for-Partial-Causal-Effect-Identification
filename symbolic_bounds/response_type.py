@@ -105,6 +105,60 @@ class ResponseType:
         """
         return len(self.mapping) == num_parent_configs
     
+    def __hash__(self) -> int:
+        """
+        Hash based on node name and mapping content (using node names, not objects).
+        Required for using ResponseType objects as dict keys.
+        """
+        # Convert mapping to hashable form using node names instead of Node objects
+        mapping_items = []
+        for parent_config, output in self.mapping.items():
+            # Convert parent_config from tuple of (Node, int) to tuple of (str, int)
+            parent_names = tuple((n.name, v) for n, v in parent_config)
+            mapping_items.append((parent_names, output))
+        
+        # Sort for consistent hashing
+        mapping_items = tuple(sorted(mapping_items, key=lambda x: (x[0], x[1])))
+        
+        return hash((self.node.name, mapping_items))
+    
+    def __eq__(self, other) -> bool:
+        """
+        Check equality based on node name and mapping content (using node names, not objects).
+        Required for using ResponseType objects as dict keys.
+        """
+        # Check if other is a ResponseType by duck typing (handles module reloading)
+        if not (hasattr(other, 'node') and hasattr(other, 'mapping')):
+            return False
+        if type(other).__name__ != 'ResponseType':
+            return False
+        
+        # Compare node names
+        if self.node.name != other.node.name:
+            return False
+        
+        # Compare mapping sizes
+        if len(self.mapping) != len(other.mapping):
+            return False
+        
+        # Compare mappings by converting Node objects to names
+        for parent_config, output in self.mapping.items():
+            # Convert to (name, value) tuples for comparison
+            parent_names = tuple((n.name, v) for n, v in parent_config)
+            
+            # Find matching config in other's mapping
+            found = False
+            for other_pc, other_out in other.mapping.items():
+                other_parent_names = tuple((n.name, v) for n, v in other_pc)
+                if parent_names == other_parent_names and output == other_out:
+                    found = True
+                    break
+            
+            if not found:
+                return False
+        
+        return True
+    
     def __repr__(self) -> str:
         return f"ResponseType(node={self.node.name}, mapping={self.mapping})"
     
