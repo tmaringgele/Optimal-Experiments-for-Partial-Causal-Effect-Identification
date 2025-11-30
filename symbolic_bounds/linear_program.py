@@ -382,33 +382,33 @@ class LinearProgram:
             "q_dimension": len(self.q_labels)
         }
     
-    def solve(self, solver_type: str = 'glpk', verbose: bool = False, equality_tolerance: float = 1e-6):
+    def solve(self, solver_type: str = 'glpk', verbose: bool = False):
         """
-        Solve the linear program using PPOPT solvers.
+        Solve the linear program using PPOPT's MPLP_Program with automatic constraint processing.
         
         The LP is converted from our format:
             minimize/maximize    α^T q
             subject to           P q = p  (equality constraints)
                                  q ≥ 0    (non-negativity)
-                                 1^T q = 1 (normalization)
         
-        To PPOPT's format with soft equality constraints:
+        To PPOPT's format:
             minimize    c^T x
-            subject to  p - ε ≤ P x ≤ p + ε  (soft equality with tolerance)
-                        x ≥ 0
+            subject to  A x ≤ b
+        
+        PPOPT's process_constraints() automatically removes strongly and weakly redundant
+        constraints and rescales them, leading to significant performance increases and
+        improved numerical stability.
         
         Args:
             solver_type: Solver to use ('glpk' or 'gurobi'). Default 'glpk'.
             verbose: If True, print detailed solver output.
-            equality_tolerance: Tolerance for equality constraints. Converts A x = b
-                              to b - ε ≤ A x ≤ b + ε. Default 1e-6.
         
         Returns:
             dict: Solution dictionary with keys:
                 - 'optimal_value': The optimal objective value
                 - 'solution': The optimal q vector (decision variables)
                 - 'status': 'optimal', 'infeasible', or 'error'
-                - 'solver_output': Raw SolverOutput object from PPOPT (if successful)
+                - 'solver_output': Raw solution object from PPOPT (if successful)
         
         Raises:
             ImportError: If PPOPT is not installed
@@ -422,6 +422,7 @@ class LinearProgram:
             if ppopt_path not in sys.path:
                 sys.path.insert(0, ppopt_path)
             
+            from ppopt.mplp_program import MPLP_Program
             from ppopt.solver import Solver
         except ImportError as e:
             raise ImportError(
@@ -437,78 +438,95 @@ class LinearProgram:
         n_vars = len(self.objective)
         n_constraints = len(self.rhs)
         
-        # IMPORTANT: Remove redundant constraints from P matrix
-        # The constraint matrix may have rank < n_rows due to the structure of the problem
-        # This causes inconsistency when matching with observed data
-        
-        # Use QR decomposition to identify linearly independent rows
-        from scipy.linalg import qr
-        Q, R, perm = qr(self.constraint_matrix.T, mode='economic', pivoting=True)
-        rank = np.linalg.matrix_rank(self.constraint_matrix)
-        
-        # Keep only linearly independent rows
-        independent_rows = sorted(perm[:rank])
-        P_reduced = self.constraint_matrix[independent_rows, :]
-        p_reduced = self.rhs[independent_rows]
-        
-        if verbose:
-            print(f"Constraint reduction: {n_constraints} rows → {len(independent_rows)} rows (rank {rank})")
-            if len(independent_rows) < n_constraints:
-                removed = [i for i in range(n_constraints) if i not in independent_rows]
-                print(f"Removed redundant rows: {removed}")
-        
-        # Build constraint matrix A and RHS vector b for PPOPT format
-        # Convert strict equality constraints P q = p to soft inequalities with tolerance
-        # This handles floating-point precision issues that can make the LP infeasible
-        
-        # P q = p becomes:
-        #   P q ≤ p + ε  (upper bound)
-        #  -P q ≤ -p + ε (lower bound, equivalent to P q ≥ p - ε)
+        # Build constraint matrix A and RHS vector b in PPOPT format: A x ≤ b
+        # Convert equality constraints P q = p to inequality pairs:
+        #   P q ≤ p  (upper bound)
+        #  -P q ≤ -p (lower bound, equivalent to P q ≥ p)
         A_rows = []
         b_rows = []
         
-        # Upper bound: P q ≤ p + ε
-        A_rows.append(P_reduced)
-        b_rows.append(p_reduced + equality_tolerance)
+        # Equality constraints: P q = p
+        A_rows.append(self.constraint_matrix)   # P q ≤ p
+        b_rows.append(self.rhs)
         
-        # Lower bound: -P q ≤ -p + ε  (i.e., P q ≥ p - ε)
-        A_rows.append(-P_reduced)
-        b_rows.append(-p_reduced + equality_tolerance)
+        A_rows.append(-self.constraint_matrix)  # -P q ≤ -p (i.e., P q ≥ p)
+        b_rows.append(-self.rhs)
         
-        # Add non-negativity: q ≥ 0 becomes -I q ≤ 0
+        # Non-negativity: q ≥ 0 becomes -q ≤ 0
         A_rows.append(-np.eye(n_vars))
         b_rows.append(np.zeros(n_vars))
         
-        # NOTE: We do NOT add an explicit normalization constraint 1^T q = 1
-        # because it is already implicitly satisfied by the P matrix constraints:
-        # Since p sums to 1 and P q = p, we have 1^T P q = 1^T p = 1
-        # Adding an explicit normalization would create redundant/conflicting constraints
-        
         # Combine all constraints
         A = np.vstack(A_rows)
-        b = np.hstack(b_rows)
+        b = np.hstack(b_rows).reshape(-1, 1)
         
         # Objective: handle minimization vs maximization
         # PPOPT minimizes by default, so for maximization, negate the objective
         c = self.objective if self.is_minimization else -self.objective
-        
-        # Ensure c is a column vector
         c = c.reshape(-1, 1)
-        b = b.reshape(-1, 1)
         
-        # Create solver with specified backend
-        solver = Solver(solvers={'lp': solver_type})
+        # MPLP_Program requires H, F, CRa, CRb for parametric programming
+        # For standard LP (no parameters), these are set appropriately:
+        # - H: n_vars × 0 (no parameter dependence in objective)
+        # - F: n_constraints × 0 (no parameter dependence in constraints)
+        # - CRa, CRb: Define empty critical region (no parameters)
+        H = np.zeros((n_vars, 0))
+        F = np.zeros((A.shape[0], 0))
+        CRa = np.zeros((0, 0))
+        CRb = np.zeros((0, 1))
         
-        # Solve the LP with all inequality constraints (no equality_constraints needed)
-        result = solver.solve_lp(c, A, b, equality_constraints=None, verbose=verbose, get_duals=True)
+        if verbose:
+            print(f"Building MPLP_Program:")
+            print(f"  Variables: {n_vars}")
+            print(f"  Constraints: {A.shape[0]} (before redundancy removal)")
+            print(f"  Original P matrix: {self.constraint_matrix.shape}")
         
-        # Process results
-        if result is None:
+        # Create MPLP_Program with Solver object
+        solver_obj = Solver(solvers={'lp': solver_type})
+        prog = MPLP_Program(A, b, c, H, CRa, CRb, F, solver=solver_obj)
+        
+        # Process constraints: remove redundant constraints and rescale
+        if verbose:
+            print("\nProcessing constraints (removing redundancies)...")
+        
+        prog.process_constraints()
+        
+        if verbose:
+            print(f"  Constraints after processing: {prog.A.shape[0]}")
+        
+        # For a standard LP (no parameters), we solve at theta = empty vector
+        # Use the prog.solver directly to solve the processed constraints
+        if verbose:
+            print("\nSolving LP with processed constraints...")
+        
+        try:
+            # Solve the LP: min c^T x s.t. A x ≤ b, using the processed constraints
+            result = prog.solver.solve_lp(
+                prog.c,
+                prog.A,
+                prog.b,
+                equality_constraints=prog.equality_indices,
+                verbose=verbose,
+                get_duals=False
+            )
+        except Exception as e:
+            if verbose:
+                print(f"Solver failed: {e}")
+            return {
+                'status': 'error',
+                'optimal_value': None,
+                'solution': None,
+                'solver_output': None,
+                'error': str(e)
+            }
+        
+        # Check if solution was found
+        if result is None or not hasattr(result, 'sol') or result.sol is None:
             return {
                 'status': 'infeasible',
                 'optimal_value': None,
                 'solution': None,
-                'solver_output': None
+                'solver_output': result
             }
         
         # Extract solution
@@ -518,6 +536,12 @@ class LinearProgram:
         # If we maximized, negate the objective back
         if not self.is_minimization:
             optimal_obj = -optimal_obj
+        
+        if verbose:
+            print(f"\n✓ Solution found")
+            print(f"  Optimal value: {optimal_obj:.8f}")
+            print(f"  Solution sum: {optimal_solution.sum():.6f}")
+            print(f"  Solution range: [{optimal_solution.min():.2e}, {optimal_solution.max():.2e}]")
         
         return {
             'status': 'optimal',
