@@ -358,7 +358,7 @@ class DAG:
         return "\n".join(lines)
     
     def draw(self, figsize=(10, 6), node_size=2000, font_size=12, 
-             with_labels=True, title=None):
+             with_labels=True, with_legend=False, title=None):
         """
         Draw the DAG using NetworkX and matplotlib.
         
@@ -455,8 +455,23 @@ class DAG:
             nx.draw_networkx_labels(G, pos, ax=ax, font_size=font_size,
                                    font_weight='bold')
         
+        # Center the graph vertically by adjusting axis limits
+        if pos:
+            y_values = [y for x, y in pos.values()]
+            y_min, y_max = min(y_values), max(y_values)
+            y_range = y_max - y_min
+            y_padding = max(0.5, y_range * 0.3)  # Add 30% padding or at least 0.5
+            ax.set_ylim(y_min - y_padding, y_max + y_padding)
+            
+            x_values = [x for x, y in pos.values()]
+            x_min, x_max = min(x_values), max(x_values)
+            x_range = x_max - x_min
+            x_padding = max(0.5, x_range * 0.2)  # Add 20% padding or at least 0.5
+            ax.set_xlim(x_min - x_padding, x_max + x_padding)
+        
         # Add legend and title
-        ax.legend(loc='upper left', fontsize=font_size-2)
+        if with_legend:
+            ax.legend(loc='upper left', fontsize=font_size-2)
         if title:
             ax.set_title(title, fontsize=font_size+2, fontweight='bold')
         else:
