@@ -423,6 +423,7 @@ class LinearProgram:
                 sys.path.insert(0, ppopt_path)
             
             from ppopt.mplp_program import MPLP_Program
+            from ppopt.mpmodel import MPModeler
             from ppopt.solver import Solver
         except ImportError as e:
             raise ImportError(
@@ -431,12 +432,14 @@ class LinearProgram:
                 f"Error: {e}"
             )
         
+        
         # Validate solver
         if solver_type not in ['glpk', 'gurobi']:
             raise ValueError(f"Solver '{solver_type}' not supported. Use 'glpk' or 'gurobi'.")
         
         n_vars = len(self.objective)
         n_constraints = len(self.rhs)
+        
         
 
         A_rows = []
@@ -445,7 +448,7 @@ class LinearProgram:
         # Equality constraints: P q = p
         for rows in range(self.constraint_matrix.shape[0]):
             A_rows.append(self.constraint_matrix[rows:rows+1, :])
-            b_rows.append(np.array([self.rhs[rows]]))
+            b_rows.append(np.array(self.rhs[rows]))
         
 
         # Non-negativity: q ≥ 0 becomes -q ≤ 0
@@ -548,3 +551,106 @@ class LinearProgram:
             'solution': optimal_solution,
             'solver_output': result
         }
+
+    def solve_model(self, solver_type: str = 'glpk', verbose: bool = False):
+        """
+        Solve the linear program using PPOPT's MPLP_Program with automatic constraint processing.
+        
+        The LP is converted from our format:
+            minimize/maximize    α^T q
+            subject to           P q = p  (equality constraints)
+                                q ≥ 0    (non-negativity)
+        
+        To PPOPT's format:
+            minimize    c^T x
+            subject to  A x ≤ b
+        
+        PPOPT's process_constraints() automatically removes strongly and weakly redundant
+        constraints and rescales them, leading to significant performance increases and
+        improved numerical stability.
+        
+        Args:
+            solver_type: Solver to use ('glpk' or 'gurobi'). Default 'glpk'.
+            verbose: If True, print detailed solver output.
+        
+        Returns:
+            dict: Solution dictionary with keys:
+                - 'optimal_value': The optimal objective value
+                - 'solution': The optimal q vector (decision variables)
+                - 'status': 'optimal', 'infeasible', or 'error'
+                - 'solver_output': Raw solution object from PPOPT (if successful)
+        
+        Raises:
+            ImportError: If PPOPT is not installed
+            ValueError: If solver_type is not supported
+        """
+        try:
+            import sys
+            import os
+            # Add PPOPT to path
+            ppopt_path = os.path.join(os.path.dirname(__file__), 'ppopt_repo', 'PPOPT', 'src')
+            if ppopt_path not in sys.path:
+                sys.path.insert(0, ppopt_path)
+            
+            from ppopt.mplp_program import MPLP_Program
+            from ppopt.mpmodel import MPModeler
+            from ppopt.solver import Solver
+            from ppopt.mp_solvers.solve_mpqp import solve_mpqp, mpqp_algorithm
+        except ImportError as e:
+            raise ImportError(
+                "PPOPT is required to solve LPs. Install it with:\n"
+                "  pip install ppopt\n"
+                f"Error: {e}"
+            )
+        
+        
+        # Validate solver
+        if solver_type not in ['glpk', 'gurobi']:
+            raise ValueError(f"Solver '{solver_type}' not supported. Use 'glpk' or 'gurobi'.")
+        
+        n_vars = len(self.objective)
+        n_constraints = len(self.rhs)
+        
+        model = MPModeler()
+
+
+        #Step 1: Define variables
+        q = []
+        for i in range(n_vars):
+            q.append(model.add_var(name=f"q_{i}"))
+
+        #Step 1.5: Define (dummy) parameters
+        # This is required by the MPLP_Program interface
+        p = model.add_param(name="p")
+        
+        #Step 2: Define obs constraints
+        for row in range(self.constraint_matrix.shape[0]):
+            lhs = sum(self.constraint_matrix[row, col] * q[col] for col in range(n_vars))
+            rhs = self.rhs[row]
+            model.add_constr(lhs == rhs)
+
+        #Step 3: Define non-negativity constraints
+        for i in range(n_vars):
+            model.add_constr(q[i] >= 0)
+        
+        #Step 4: Define objective
+        if self.is_minimization:
+            model.set_objective(sum(self.objective[i] * q[i] for i in range(n_vars)))
+        else:
+            model.set_objective(sum(-self.objective[i] * q[i] for i in range(n_vars)))
+        
+    
+        if verbose:
+            print(f"Building MPLP_Program:")
+            print(f"  Variables: {n_vars}")
+        prog = model.formulate_problem()
+
+        # Process constraints: remove redundant constraints and rescale
+        if verbose:
+            print("\nProcessing constraints (removing redundancies)...")
+        
+        prog.process_constraints()
+
+        solution = solve_mpqp(prog, mpqp_algorithm.combinatorial)
+
+        return solution
