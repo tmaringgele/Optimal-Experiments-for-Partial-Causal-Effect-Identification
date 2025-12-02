@@ -651,7 +651,11 @@ class ProgramFactory:
         Y: Set[Node],
         X: Set[Node],
         Y_values: Tuple[int, ...],
-        X_values: Tuple[int, ...]
+        X_values: Tuple[int, ...],
+        V: Set[Node] = None,
+        Z: Set[Node] = None,
+        V_values: Tuple[int, ...] = None,
+        Z_values: Tuple[int, ...] = None
     ) -> LinearProgram:
         """
         Construct a linear program for computing bounds on P(Y=y | do(X=x)).
@@ -659,6 +663,7 @@ class ProgramFactory:
         This function creates the full LP structure:
             minimize/maximize    α^T q
             subject to           P q = p
+                                A_a = p_a
                                  q ≥ 0
                                  1^T q = 1
         
@@ -676,24 +681,18 @@ class ProgramFactory:
             X: Set of intervention nodes (must be in W_R)
             Y_values: Target values for Y nodes (tuple of ints)
             X_values: Intervention values for X nodes (tuple of ints)
+            V: Optional set of experimental outcome nodes (must be in W_R)
+            Z: Optional set of experimental intervention nodes (must be in W_R)
+            V_values: Optional target values for V nodes (tuple of ints)
+            Z_values: Optional intervention values for Z nodes (tuple of ints)
         
         Returns:
             LinearProgram object containing objective, constraints, and RHS
             
         Raises:
-            ValueError: If Y or X nodes are not in the DAG or not in W_R
+            ValueError: If Y or X nodes are not in the DAG or not in W_R, or if V/Z parameters are inconsistent
         """
         dag = scm.dag
-        
-        # Validate that Y and X are in the DAG
-        all_nodes = dag.get_all_nodes()
-        if not Y.issubset(all_nodes):
-            missing = Y - all_nodes
-            raise ValueError(f"Y nodes not in DAG: {[n.name for n in missing]}")
-        
-        if not X.issubset(all_nodes):
-            missing = X - all_nodes
-            raise ValueError(f"X nodes not in DAG: {[n.name for n in missing]}")
         
         # Validate that Y and X are in W_R (required by writeRung2)
         if not Y.issubset(dag.W_R):
@@ -703,6 +702,28 @@ class ProgramFactory:
         if not X.issubset(dag.W_R):
             not_in_wr = X - dag.W_R
             raise ValueError(f"X nodes must be in W_R: {[n.name for n in not_in_wr]}")
+        
+        # Validate experimental parameters if provided
+        if V is not None or Z is not None or V_values is not None or Z_values is not None:
+            # All experimental parameters must be provided together
+            if V is None or Z is None or V_values is None or Z_values is None:
+                raise ValueError("If experimental parameters are provided, all of V, Z, V_values, and Z_values must be given")
+            
+            # Validate that V and Z are in W_R
+            if not V.issubset(dag.W_R):
+                not_in_wr = V - dag.W_R
+                raise ValueError(f"V nodes must be in W_R: {[n.name for n in not_in_wr]}")
+            if not Z.issubset(dag.W_R):
+                not_in_wr = Z - dag.W_R
+                raise ValueError(f"Z nodes must be in W_R: {[n.name for n in not_in_wr]}")
+            
+            # Validate value counts
+            V_nodes_sorted = sorted(V, key=lambda n: n.name)
+            Z_nodes_sorted = sorted(Z, key=lambda n: n.name)
+            if len(V_values) != len(V_nodes_sorted):
+                raise ValueError(f"Expected {len(V_nodes_sorted)} values for V, got {len(V_values)}")
+            if len(Z_values) != len(Z_nodes_sorted):
+                raise ValueError(f"Expected {len(Z_nodes_sorted)} values for Z, got {len(Z_values)}")
         
         # Step 1: Generate objective vector α using writeRung2
         # This represents the query P(Y=y | do(X=x))
@@ -733,12 +754,25 @@ class ProgramFactory:
             
             # Get probability from observed joint dict
             p[i] = observed_joint.get(config_key, 0.0)
+
+        experiment_labels = []
+        experiment_rows = []
+        # Step 4: Add P(V=v|do(Z=z)) constraints if V and Z are provided
+        if V is not None and Z is not None:
+            # Build label for the constraint
+            v_label = ", ".join(f"{node.name}={value}" for node, value in zip(sorted(V, key=lambda n: n.name), V_values))
+            z_label = ", ".join(f"{node.name}={value}" for node, value in zip(sorted(Z, key=lambda n: n.name), Z_values))
+            experiment_labels.append(f"P({v_label} | do({z_label}))")
+            # Use writeRung2 to build the constraint row
+            experiment_rows.append(ProgramFactory.writeRung2(dag, V, Z, V_values, Z_values))
+        
+        experiment_matrix = np.array(experiment_rows) if experiment_rows else np.zeros((0, len(alpha)))
         
         # Verify that probabilities sum to 1
         if not abs(np.sum(p) - 1.0) < 1e-10:
             raise ValueError(f"RHS probabilities must sum to 1, got {np.sum(p)}")
         
-        # Step 4: Create LinearProgram object
+        # Step 5: Create LinearProgram object
         # Extract q_labels from response_type_index (sorted by index)
         q_labels = [None] * len(constraints.response_type_index)
         for rt_combo, idx in constraints.response_type_index.items():
@@ -751,6 +785,8 @@ class ProgramFactory:
             q_labels=q_labels,
             variable_labels=constraints.response_type_labels,
             constraint_labels=constraints.joint_prob_labels,
+            experiment_matrix=experiment_matrix,
+            experiment_labels=experiment_labels,
             is_minimization=True  # Default to minimization for lower bound
         )
         

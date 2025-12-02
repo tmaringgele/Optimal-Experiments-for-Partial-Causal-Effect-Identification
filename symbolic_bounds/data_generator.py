@@ -112,7 +112,7 @@ class DataGenerator:
         
         Algorithm:
         1. Enumerate all response-type configurations
-        2. For each configuration, compute its probability (product of individual probabilities)
+        2. For each configuration, compute its probability (product of individual probabilities, since independent)
         3. Simulate the deterministic values produced by each configuration
         4. Accumulate probabilities for each observable outcome
         

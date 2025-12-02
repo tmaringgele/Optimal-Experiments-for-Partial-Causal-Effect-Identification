@@ -46,6 +46,8 @@ class LinearProgram:
         q_labels: list[tuple],
         variable_labels: list[str],
         constraint_labels: list[str],
+        experiment_matrix: Optional[np.ndarray] = None,
+        experiment_labels: Optional[list[str]] = None,
         is_minimization: bool = True
     ):
         """
@@ -98,6 +100,8 @@ class LinearProgram:
         self.variable_labels = variable_labels
         self.constraint_labels = constraint_labels
         self.is_minimization = is_minimization
+        self.experiment_matrix = experiment_matrix
+        self.experiment_labels = experiment_labels
     
     def print_lp(self, show_full_matrices: bool = False) -> None:
         """
@@ -150,6 +154,29 @@ class LinearProgram:
             print(f"\n  p values:")
             for i, (val, label) in enumerate(zip(self.rhs, self.constraint_labels)):
                 print(f"    p[{i}] = {val:8.6f}  ({label})")
+        
+        # Experiment matrix information
+        if self.experiment_matrix is not None:
+            print(f"\nExperiment matrix E:")
+            print(f"  Shape: {self.experiment_matrix.shape} (experiments × configurations)")
+            print(f"  Number of experiments: {self.experiment_matrix.shape[0]}")
+            
+            if self.experiment_labels:
+                print(f"  Experiment labels available: {len(self.experiment_labels)}")
+            
+            if show_full_matrices:
+                non_zero_count = np.sum(np.abs(self.experiment_matrix) > 1e-10)
+                total_entries = self.experiment_matrix.shape[0] * self.experiment_matrix.shape[1]
+                print(f"  Non-zero entries: {non_zero_count} / {total_entries}")
+                
+                if self.experiment_labels:
+                    print(f"\n  Experiments:")
+                    n_show = min(5, len(self.experiment_labels))
+                    for i in range(n_show):
+                        non_zero = np.sum(np.abs(self.experiment_matrix[i]) > 1e-10)
+                        print(f"    Exp {i} ({self.experiment_labels[i]}): {non_zero} non-zero entries")
+                    if len(self.experiment_labels) > n_show:
+                        print(f"    ... and {len(self.experiment_labels) - n_show} more experiments")
         
         # Probability constraints
         print(f"\n              q ≥ 0")
@@ -263,7 +290,7 @@ class LinearProgram:
         
         print("\n" + "=" * 80)
     
-    def print_constraints(self, max_terms_per_row: Optional[int] = None) -> None:
+    def print_constraints(self, max_terms_per_row: Optional[int] = None, include_matrix: bool = False) -> None:
         """
         Print all constraints P q = p in equation form.
         
@@ -307,6 +334,9 @@ class LinearProgram:
             lhs = " + ".join(terms) if terms else "0"
             print(f"  LHS = {lhs}")
             print(f"  Non-zero terms: {len(nonzero_indices)}")
+        if include_matrix:
+            print(f" \nFull constraint matrix P:")
+            print(self.constraint_matrix)
         
         print("\n" + "=" * 80)
     
@@ -335,6 +365,34 @@ class LinearProgram:
         
         print("\n" + "=" * 80)
     
+    def print_experiment_matrix(self, include_matrix: bool = False) -> None:
+        """
+        Print the experiment matrix E if available.
+        """
+        if self.experiment_matrix is not None:
+            print(f"\nExperiment matrix E:")
+            print(f"  Shape: {self.experiment_matrix.shape} (experiments × configurations)")
+            print(f"  Number of experiments: {self.experiment_matrix.shape[0]}")
+            
+            if self.experiment_labels:
+                print(f"  Experiment labels available: {len(self.experiment_labels)}")
+            
+            non_zero_count = np.sum(np.abs(self.experiment_matrix) > 1e-10)
+            total_entries = self.experiment_matrix.shape[0] * self.experiment_matrix.shape[1]
+            print(f"  Non-zero entries: {non_zero_count} / {total_entries}")
+            
+            # Print details of each experiment
+            print(f"\n  Experiments:")
+            n_show = min(5, len(self.experiment_labels))
+            for i in range(n_show):
+                non_zero = np.sum(np.abs(self.experiment_matrix[i]) > 1e-10)
+                print(f"    Exp {i} ({self.experiment_labels[i]}): {non_zero} non-zero entries")
+            if len(self.experiment_labels) > n_show:
+                print(f"    ... and {len(self.experiment_labels) - n_show} more experiments")
+            if include_matrix:
+                print(f"\nFull experiment matrix:")
+                print(self.experiment_matrix)
+    
     def print_full_lp(self, include_matrix: bool = False) -> None:
         """
         Print complete LP with all components.
@@ -355,10 +413,9 @@ class LinearProgram:
         self.print_decision_variables()
         self.print_objective()
         self.print_rhs()
-        self.print_constraints()
-        
-        if include_matrix:
-            self.print_constraint_matrix()
+        self.print_constraints(include_matrix=include_matrix)
+        self.print_experiment_matrix(include_matrix=include_matrix)
+
         
         print("\n" + "=" * 100)
         print(" " * 38 + "END OF LINEAR PROGRAM")
