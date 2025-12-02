@@ -438,42 +438,41 @@ class LinearProgram:
         n_vars = len(self.objective)
         n_constraints = len(self.rhs)
         
-        # Build constraint matrix A and RHS vector b in PPOPT format: A x ≤ b
-        # Convert equality constraints P q = p to inequality pairs:
-        #   P q ≤ p  (upper bound)
-        #  -P q ≤ -p (lower bound, equivalent to P q ≥ p)
+
         A_rows = []
         b_rows = []
         
         # Equality constraints: P q = p
-        A_rows.append(self.constraint_matrix)   # P q ≤ p
-        b_rows.append(self.rhs)
+        for rows in range(self.constraint_matrix.shape[0]):
+            A_rows.append(self.constraint_matrix[rows:rows+1, :])
+            b_rows.append(np.array([self.rhs[rows]]))
         
-        A_rows.append(-self.constraint_matrix)  # -P q ≤ -p (i.e., P q ≥ p)
-        b_rows.append(-self.rhs)
-        
+
         # Non-negativity: q ≥ 0 becomes -q ≤ 0
-        A_rows.append(-np.eye(n_vars))
-        b_rows.append(np.zeros(n_vars))
+        A_rows.append(-np.ones(n_vars))
+        b_rows.append(np.zeros(1))
         
         # Combine all constraints
         A = np.vstack(A_rows)
-        b = np.hstack(b_rows).reshape(-1, 1)
+        b = np.vstack(b_rows)
         
+        eq_indices = list(range(self.constraint_matrix.shape[0]))
         # Objective: handle minimization vs maximization
         # PPOPT minimizes by default, so for maximization, negate the objective
         c = self.objective if self.is_minimization else -self.objective
         c = c.reshape(-1, 1)
         
-        # MPLP_Program requires H, F, CRa, CRb for parametric programming
-        # For standard LP (no parameters), these are set appropriately:
-        # - H: n_vars × 0 (no parameter dependence in objective)
-        # - F: n_constraints × 0 (no parameter dependence in constraints)
-        # - CRa, CRb: Define empty critical region (no parameters)
-        H = np.zeros((n_vars, 0))
-        F = np.zeros((A.shape[0], 0))
-        CRa = np.zeros((0, 0))
-        CRb = np.zeros((0, 1))
+        # MPLP_Program requires H, F, A_t, b_t for parametric programming
+        # Here we have no parameters, so set them to empty
+        # H = np.zeros((2, 1))
+        # F = np.zeros((1, 2))
+        # A_t = np.zeros((1, 2))
+        # b_t = np.zeros((2, 1))
+        H = np.zeros((0, 0))
+        F = np.zeros((0, 0))
+        A_t = np.zeros((0, 0))
+        b_t = np.zeros((0, 0))
+
         
         if verbose:
             print(f"Building MPLP_Program:")
@@ -483,7 +482,7 @@ class LinearProgram:
         
         # Create MPLP_Program with Solver object
         solver_obj = Solver(solvers={'lp': solver_type})
-        prog = MPLP_Program(A, b, c, H, CRa, CRb, F, solver=solver_obj)
+        prog = MPLP_Program(A, b, c, H, A_t, b_t, F, solver=solver_obj, equality_indices=eq_indices)
         
         # Process constraints: remove redundant constraints and rescale
         if verbose:
