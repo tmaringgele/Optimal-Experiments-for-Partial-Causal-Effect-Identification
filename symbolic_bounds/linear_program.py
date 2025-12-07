@@ -20,18 +20,21 @@ class ParametricSolution:
     This class handles:
     - Automatic array shape conversion (1D -> 2D column vector)
     - Consistent interface regardless of whether experiments exist
+    - Automatic sign correction for maximization problems
     """
     
-    def __init__(self, ppopt_solution, num_experiments: int):
+    def __init__(self, ppopt_solution, num_experiments: int, is_minimization: bool):
         """
         Create a parametric solution wrapper.
         
         Args:
             ppopt_solution: The Solution object from PPOPT
             num_experiments: Number of experimental constraints (0 if none)
+            is_minimization: True if this is a minimization problem, False for maximization
         """
         self.solution = ppopt_solution
         self.num_experiments = num_experiments
+        self.is_minimization = is_minimization
     
     def evaluate_objective(self, theta):
         """
@@ -46,6 +49,11 @@ class ParametricSolution:
         Returns:
             float: The objective value at the given parameter value,
                    or None if the parameter is outside the feasible region.
+                   
+        Note:
+            For maximization problems (is_minimization=False), the result is
+            automatically negated to give the correct sign, since PPOPT internally
+            converts maximization to minimization.
         """
         # Convert theta to proper shape
         theta_arr = np.asarray(theta)
@@ -72,7 +80,14 @@ class ParametricSolution:
             )
         
         # Evaluate using PPOPT's solution
-        return self.solution.evaluate_objective(theta_arr)
+        result = self.solution.evaluate_objective(theta_arr)
+        
+        # For maximization problems, PPOPT returns the negated value
+        # (since it converts max to min internally), so we need to negate it back
+        if result is not None and not self.is_minimization:
+            result = -result
+        
+        return result
     
     def get_region(self, theta):
         """Get the critical region containing the given parameter value."""
@@ -645,4 +660,4 @@ class LinearProgram:
 
         # Wrap the solution for easier usage
         num_experiments = 0 if self.experiment_matrix is None else self.experiment_matrix.shape[0]
-        return ParametricSolution(solution, num_experiments)
+        return ParametricSolution(solution, num_experiments, self.is_minimization)
