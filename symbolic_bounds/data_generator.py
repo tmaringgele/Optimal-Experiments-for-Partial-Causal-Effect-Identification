@@ -164,6 +164,151 @@ class DataGenerator:
         
         return observed_joint
     
+    def computeTrueIntervention(
+        self,
+        Y: Set[Node],
+        X: Set[Node],
+        Y_values: Tuple[int, ...],
+        X_values: Tuple[int, ...]
+    ) -> float:
+        """
+        Compute the true probability P(Y=y | do(X=x)) using the stored response type distribution.
+        
+        Under intervention do(X=x), we:
+        1. Set X nodes to values x (overriding their response types)
+        2. Use response types to simulate other nodes
+        3. Check if Y nodes take values y
+        4. Sum probabilities over all compatible response type configurations
+        
+        Args:
+            Y: Set of target/outcome nodes
+            X: Set of intervention nodes
+            Y_values: Tuple of target values for Y nodes (in sorted order by node name)
+            X_values: Tuple of intervention values for X nodes (in sorted order by node name)
+        
+        Returns:
+            Probability P(Y=y | do(X=x))
+        
+        Raises:
+            ValueError: If Y and X are not disjoint, or if value counts don't match
+        """
+        # Validate inputs
+        if not Y.isdisjoint(X):
+            raise ValueError(f"Y and X must be disjoint. Overlap: {[n.name for n in Y & X]}")
+        
+        # Sort nodes for consistent ordering
+        Y_nodes = sorted(Y, key=lambda n: n.name)
+        X_nodes = sorted(X, key=lambda n: n.name)
+        
+        if len(Y_values) != len(Y_nodes):
+            raise ValueError(f"Expected {len(Y_nodes)} values for Y, got {len(Y_values)}")
+        if len(X_values) != len(X_nodes):
+            raise ValueError(f"Expected {len(X_nodes)} values for X, got {len(X_values)}")
+        
+        # Create intervention and target configurations
+        X_config = dict(zip(X_nodes, X_values))
+        Y_target = dict(zip(Y_nodes, Y_values))
+        
+        # Get all nodes and topological order
+        all_nodes = sorted(self.dag.get_all_nodes(), key=lambda n: n.name)
+        topo_order = self._topological_sort(all_nodes)
+        
+        # Enumerate all response-type configurations
+        node_response_types = []
+        for node in topo_order:
+            node_response_types.append((node, node.response_types))
+        
+        response_type_configs = product(*[rts for _, rts in node_response_types])
+        
+        # Sum probability over compatible response type configurations
+        total_prob = 0.0
+        
+        for rt_config in response_type_configs:
+            # Compute probability of this response-type configuration
+            rt_prob = 1.0
+            for node, rt in zip(topo_order, rt_config):
+                rt_prob *= self.trueResponseTypes[(node, rt)]
+            
+            # Skip if probability is negligible
+            if rt_prob < 1e-15:
+                continue
+            
+            # Simulate values under intervention do(X=x)
+            simulated_values = self._simulate_intervention(topo_order, rt_config, X_config)
+            
+            # Check if Y nodes match target values
+            matches_target = True
+            for y_node, y_target_value in Y_target.items():
+                if simulated_values[y_node] != y_target_value:
+                    matches_target = False
+                    break
+            
+            # Accumulate probability if configuration produces Y=y under do(X=x)
+            if matches_target:
+                total_prob += rt_prob
+        
+        return total_prob
+    
+    def _simulate_intervention(
+        self,
+        topo_order: list[Node],
+        rt_config: Tuple[ResponseType, ...],
+        intervention: Dict[Node, int]
+    ) -> Dict[Node, int]:
+        """
+        Simulate values under intervention do(X=x).
+        
+        Similar to _simulate_values, but with intervention overriding certain nodes.
+        
+        Args:
+            topo_order: Nodes in topological order
+            rt_config: Tuple of ResponseType objects (one per node in topo_order)
+            intervention: Dict mapping intervened nodes to their fixed values
+        
+        Returns:
+            Dictionary mapping Node -> simulated value
+        """
+        simulated_values = {}
+        
+        for node, rt in zip(topo_order, rt_config):
+            # Check if this node is intervened on
+            if node in intervention:
+                # Override with intervention value
+                simulated_values[node] = intervention[node]
+            else:
+                # Use response type to compute value
+                parents = self.dag.get_parents(node)
+                
+                if not parents:
+                    # No parents - response type directly determines value
+                    parent_config = ()
+                    value = rt.mapping[parent_config]
+                else:
+                    # Get parent values from already-simulated values
+                    parent_values = []
+                    for parent in sorted(parents, key=lambda p: p.name):
+                        if parent not in simulated_values:
+                            raise ValueError(
+                                f"Parent {parent.name} not yet simulated when processing {node.name}. "
+                                "Topological order may be incorrect."
+                            )
+                        parent_values.append((parent, simulated_values[parent]))
+                    
+                    # Look up the value in the response type mapping
+                    parent_config = tuple(sorted(parent_values, key=lambda x: x[0].name))
+                    
+                    if parent_config not in rt.mapping:
+                        raise ValueError(
+                            f"Parent configuration {parent_config} not found in response type "
+                            f"mapping for node {node.name}"
+                        )
+                    
+                    value = rt.mapping[parent_config]
+                
+                simulated_values[node] = value
+        
+        return simulated_values
+    
     def _simulate_values(
         self, 
         topo_order: list[Node], 
