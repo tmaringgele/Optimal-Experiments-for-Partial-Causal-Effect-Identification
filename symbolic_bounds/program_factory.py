@@ -755,18 +755,22 @@ class ProgramFactory:
             # Get probability from observed joint dict
             p[i] = observed_joint.get(config_key, 0.0)
 
-        experiment_labels = []
-        experiment_rows = []
+
+        experiment_matrix = None
+        experiment_labels = None
         # Step 4: Add P(V=v|do(Z=z)) constraints if V and Z are provided
         if V is not None and Z is not None:
+            experiment_labels = []
+            experiment_rows = []
             # Build label for the constraint
             v_label = ", ".join(f"{node.name}={value}" for node, value in zip(sorted(V, key=lambda n: n.name), V_values))
             z_label = ", ".join(f"{node.name}={value}" for node, value in zip(sorted(Z, key=lambda n: n.name), Z_values))
             experiment_labels.append(f"P({v_label} | do({z_label}))")
             # Use writeRung2 to build the constraint row
             experiment_rows.append(ProgramFactory.writeRung2(dag, V, Z, V_values, Z_values))
+            experiment_matrix = np.array(experiment_rows) if experiment_rows else np.zeros((0, len(alpha)))
         
-        experiment_matrix = np.array(experiment_rows) if experiment_rows else np.zeros((0, len(alpha)))
+        
         
         # Verify that probabilities sum to 1
         if not abs(np.sum(p) - 1.0) < 1e-10:

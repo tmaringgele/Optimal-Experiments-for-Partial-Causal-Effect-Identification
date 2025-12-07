@@ -446,176 +446,7 @@ class LinearProgram:
         The LP is converted from our format:
             minimize/maximize    α^T q
             subject to           P q = p  (equality constraints)
-                                 q ≥ 0    (non-negativity)
-        
-        To PPOPT's format:
-            minimize    c^T x
-            subject to  A x ≤ b
-        
-        PPOPT's process_constraints() automatically removes strongly and weakly redundant
-        constraints and rescales them, leading to significant performance increases and
-        improved numerical stability.
-        
-        Args:
-            solver_type: Solver to use ('glpk' or 'gurobi'). Default 'glpk'.
-            verbose: If True, print detailed solver output.
-        
-        Returns:
-            dict: Solution dictionary with keys:
-                - 'optimal_value': The optimal objective value
-                - 'solution': The optimal q vector (decision variables)
-                - 'status': 'optimal', 'infeasible', or 'error'
-                - 'solver_output': Raw solution object from PPOPT (if successful)
-        
-        Raises:
-            ImportError: If PPOPT is not installed
-            ValueError: If solver_type is not supported
-        """
-        try:
-            import sys
-            import os
-            # Add PPOPT to path
-            ppopt_path = os.path.join(os.path.dirname(__file__), 'ppopt_repo', 'PPOPT', 'src')
-            if ppopt_path not in sys.path:
-                sys.path.insert(0, ppopt_path)
-            
-            from ppopt.mplp_program import MPLP_Program
-            from ppopt.mpmodel import MPModeler
-            from ppopt.solver import Solver
-        except ImportError as e:
-            raise ImportError(
-                "PPOPT is required to solve LPs. Install it with:\n"
-                "  pip install ppopt\n"
-                f"Error: {e}"
-            )
-        
-        
-        # Validate solver
-        if solver_type not in ['glpk', 'gurobi']:
-            raise ValueError(f"Solver '{solver_type}' not supported. Use 'glpk' or 'gurobi'.")
-        
-        n_vars = len(self.objective)
-        n_constraints = len(self.rhs)
-        
-        
-
-        A_rows = []
-        b_rows = []
-        
-        # Equality constraints: P q = p
-        for rows in range(self.constraint_matrix.shape[0]):
-            A_rows.append(self.constraint_matrix[rows:rows+1, :])
-            b_rows.append(np.array(self.rhs[rows]))
-        
-
-        # Non-negativity: q ≥ 0 becomes -q ≤ 0
-        A_rows.append(-np.ones(n_vars))
-        b_rows.append(np.zeros(1))
-        
-        # Combine all constraints
-        A = np.vstack(A_rows)
-        b = np.vstack(b_rows)
-        
-        eq_indices = list(range(self.constraint_matrix.shape[0]))
-        # Objective: handle minimization vs maximization
-        # PPOPT minimizes by default, so for maximization, negate the objective
-        c = self.objective if self.is_minimization else -self.objective
-        c = c.reshape(-1, 1)
-        
-        # MPLP_Program requires H, F, A_t, b_t for parametric programming
-        # Here we have no parameters, so set them to empty
-        # H = np.zeros((2, 1))
-        # F = np.zeros((1, 2))
-        # A_t = np.zeros((1, 2))
-        # b_t = np.zeros((2, 1))
-        H = np.zeros((0, 0))
-        F = np.zeros((0, 0))
-        A_t = np.zeros((0, 0))
-        b_t = np.zeros((0, 0))
-
-        
-        if verbose:
-            print(f"Building MPLP_Program:")
-            print(f"  Variables: {n_vars}")
-            print(f"  Constraints: {A.shape[0]} (before redundancy removal)")
-            print(f"  Original P matrix: {self.constraint_matrix.shape}")
-        
-        # Create MPLP_Program with Solver object
-        solver_obj = Solver(solvers={'lp': solver_type})
-        prog = MPLP_Program(A, b, c, H, A_t, b_t, F, solver=solver_obj, equality_indices=eq_indices)
-        
-        # Process constraints: remove redundant constraints and rescale
-        if verbose:
-            print("\nProcessing constraints (removing redundancies)...")
-        
-        prog.process_constraints()
-        
-        if verbose:
-            print(f"  Constraints after processing: {prog.A.shape[0]}")
-        
-        # For a standard LP (no parameters), we solve at theta = empty vector
-        # Use the prog.solver directly to solve the processed constraints
-        if verbose:
-            print("\nSolving LP with processed constraints...")
-        
-        try:
-            # Solve the LP: min c^T x s.t. A x ≤ b, using the processed constraints
-            result = prog.solver.solve_lp(
-                prog.c,
-                prog.A,
-                prog.b,
-                equality_constraints=prog.equality_indices,
-                verbose=verbose,
-                get_duals=False
-            )
-        except Exception as e:
-            if verbose:
-                print(f"Solver failed: {e}")
-            return {
-                'status': 'error',
-                'optimal_value': None,
-                'solution': None,
-                'solver_output': None,
-                'error': str(e)
-            }
-        
-        # Check if solution was found
-        if result is None or not hasattr(result, 'sol') or result.sol is None:
-            return {
-                'status': 'infeasible',
-                'optimal_value': None,
-                'solution': None,
-                'solver_output': result
-            }
-        
-        # Extract solution
-        optimal_solution = result.sol.flatten()
-        optimal_obj = float(result.obj)
-        
-        # If we maximized, negate the objective back
-        if not self.is_minimization:
-            optimal_obj = -optimal_obj
-        
-        if verbose:
-            print(f"\n✓ Solution found")
-            print(f"  Optimal value: {optimal_obj:.8f}")
-            print(f"  Solution sum: {optimal_solution.sum():.6f}")
-            print(f"  Solution range: [{optimal_solution.min():.2e}, {optimal_solution.max():.2e}]")
-        
-        return {
-            'status': 'optimal',
-            'optimal_value': optimal_obj,
-            'solution': optimal_solution,
-            'solver_output': result
-        }
-
-    def solve_model(self, solver_type: str = 'glpk', verbose: bool = False):
-        """
-        Solve the linear program using PPOPT's MPLP_Program with automatic constraint processing.
-        
-        The LP is converted from our format:
-            minimize/maximize    α^T q
-            subject to           P q = p  (equality constraints)
+                                Exp q = theta (experiment constraints)
                                 q ≥ 0    (non-negativity)
         
         To PPOPT's format:
@@ -676,21 +507,30 @@ class LinearProgram:
         for i in range(n_vars):
             q.append(model.add_var(name=f"q_{i}"))
 
-        #Step 1.5: Define (dummy) parameters
+        #Step 2: If no experiments, define dummy parameter theta
         # This is required by the MPLP_Program interface
-        p = model.add_param(name="p")
+        if self.experiment_matrix is None:
+            theta = model.add_param(name="theta")
+        else:
+            #Define experiment constraints
+            theta = []
+            for exp_idx in range(self.experiment_matrix.shape[0]):
+                theta.append(model.add_param(name=f"theta_{exp_idx}"))
+                lhs = sum(self.experiment_matrix[exp_idx, col] * q[col] for col in range(n_vars))
+                model.add_constr(lhs == theta[exp_idx])  #Assuming each experiment sums to 1
+
         
-        #Step 2: Define obs constraints
+        #Step 3: Define obs constraints
         for row in range(self.constraint_matrix.shape[0]):
             lhs = sum(self.constraint_matrix[row, col] * q[col] for col in range(n_vars))
             rhs = self.rhs[row]
             model.add_constr(lhs == rhs)
 
-        #Step 3: Define non-negativity constraints
+        #Step 4: Define non-negativity constraints
         for i in range(n_vars):
             model.add_constr(q[i] >= 0)
         
-        #Step 4: Define objective
+        #Step 5: Define objective
         if self.is_minimization:
             model.set_objective(sum(self.objective[i] * q[i] for i in range(n_vars)))
         else:
