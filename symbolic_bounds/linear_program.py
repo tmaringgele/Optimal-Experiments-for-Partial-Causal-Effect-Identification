@@ -12,6 +12,92 @@ import numpy as np
 from typing import Optional
 
 
+class ParametricSolution:
+    """
+    Wrapper around PPOPT's Solution object that provides a cleaner interface
+    for evaluating parametric linear programs.
+    
+    This class handles:
+    - Automatic array shape conversion (1D -> 2D column vector)
+    - Consistent interface regardless of whether experiments exist
+    """
+    
+    def __init__(self, ppopt_solution, num_experiments: int):
+        """
+        Create a parametric solution wrapper.
+        
+        Args:
+            ppopt_solution: The Solution object from PPOPT
+            num_experiments: Number of experimental constraints (0 if none)
+        """
+        self.solution = ppopt_solution
+        self.num_experiments = num_experiments
+    
+    def evaluate_objective(self, theta):
+        """
+        Evaluate the objective function at a specific parameter value.
+        
+        Args:
+            theta: Parameter value(s). Can be:
+                - Scalar: converted to np.array([[theta]])
+                - 1D array: converted to column vector
+                - 2D array: used directly
+                
+        Returns:
+            float: The objective value at the given parameter value,
+                   or None if the parameter is outside the feasible region.
+        """
+        # Convert theta to proper shape
+        theta_arr = np.asarray(theta)
+        
+        # Handle different input shapes
+        if theta_arr.ndim == 0:
+            # Scalar input
+            theta_arr = theta_arr.reshape(1, 1)
+        elif theta_arr.ndim == 1:
+            # 1D array - reshape to column vector
+            theta_arr = theta_arr.reshape(-1, 1)
+        elif theta_arr.ndim == 2:
+            # Already 2D - use as is
+            pass
+        else:
+            raise ValueError(f"theta must be scalar, 1D, or 2D array, got shape {theta_arr.shape}")
+        
+        # Ensure correct number of parameters
+        expected_params = self.num_experiments if self.num_experiments > 0 else 1
+        if theta_arr.shape[0] != expected_params:
+            raise ValueError(
+                f"Expected {expected_params} parameter(s), got {theta_arr.shape[0]}. "
+                f"{'One parameter per experimental constraint.' if self.num_experiments > 0 else 'Use any scalar for dummy parameter.'}"
+            )
+        
+        # Evaluate using PPOPT's solution
+        return self.solution.evaluate_objective(theta_arr)
+    
+    def get_region(self, theta):
+        """Get the critical region containing the given parameter value."""
+        theta_arr = np.asarray(theta)
+        if theta_arr.ndim <= 1:
+            theta_arr = theta_arr.reshape(-1, 1)
+        return self.solution.get_region(theta_arr)
+    
+    def evaluate(self, theta):
+        """Evaluate the decision variables at a specific parameter value."""
+        theta_arr = np.asarray(theta)
+        if theta_arr.ndim <= 1:
+            theta_arr = theta_arr.reshape(-1, 1)
+        return self.solution.evaluate(theta_arr)
+    
+    @property
+    def critical_regions(self):
+        """Access the underlying critical regions."""
+        return self.solution.critical_regions
+    
+    def __len__(self):
+        """Number of critical regions."""
+        return len(self.solution.critical_regions)
+
+
 class LinearProgram:
     """
     Represents a linear program for computing causal effect bounds.
@@ -451,7 +537,16 @@ class LinearProgram:
         
         To PPOPT's format:
             minimize    c^T x
-            subject to  A x ≤ b
+            subject to  A x ≤ b + F θ
+        
+        When experimental constraints exist (experiment_matrix is not None), the solution
+        is a parametric solution where θ represents the experimental results. To evaluate
+        the objective at a specific experimental result, use:
+            solution = lp.solve()
+            result = solution.evaluate_objective(np.array([[theta_value]]))
+        
+        When no experimental constraints exist, a dummy parameter is created for PPOPT
+        compatibility, and you can evaluate using any dummy value.
         
         PPOPT's process_constraints() automatically removes strongly and weakly redundant
         constraints and rescales them, leading to significant performance increases and
@@ -462,11 +557,9 @@ class LinearProgram:
             verbose: If True, print detailed solver output.
         
         Returns:
-            dict: Solution dictionary with keys:
-                - 'optimal_value': The optimal objective value
-                - 'solution': The optimal q vector (decision variables)
-                - 'status': 'optimal', 'infeasible', or 'error'
-                - 'solver_output': Raw solution object from PPOPT (if successful)
+            ParametricSolution: A wrapper around PPOPT's Solution object that handles
+                evaluation at specific parameter values. Use .evaluate_objective(theta)
+                to get the objective value at a specific parameter value.
         
         Raises:
             ImportError: If PPOPT is not installed
@@ -550,4 +643,6 @@ class LinearProgram:
 
         solution = solve_mpqp(prog, mpqp_algorithm.combinatorial)
 
-        return solution
+        # Wrap the solution for easier usage
+        num_experiments = 0 if self.experiment_matrix is None else self.experiment_matrix.shape[0]
+        return ParametricSolution(solution, num_experiments)
