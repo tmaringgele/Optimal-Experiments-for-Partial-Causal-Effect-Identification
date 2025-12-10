@@ -338,7 +338,7 @@ class LinearProgram:
         
         print("\n" + "=" * 80)
     
-    def print_objective(self) -> None:
+    def print_objective(self, in_order = False) -> None:
         """
         Print the objective function α^T q with all coefficients.
         """
@@ -355,6 +355,12 @@ class LinearProgram:
         
         print(f"Non-zero entries: {len(non_zero_indices)}")
         print(f"Zero entries: {zero_count}")
+
+        if in_order:
+            for idx in range(len(self.objective)):
+                print(f"  α[{idx}] = {self.objective[idx]:1.0f}    ({self.variable_labels[idx]})")
+
+            return
         
         if len(non_zero_indices) > 0:
             print("\nNon-zero coefficients:")
@@ -661,3 +667,147 @@ class LinearProgram:
         # Wrap the solution for easier usage
         num_experiments = 0 if self.experiment_matrix is None else self.experiment_matrix.shape[0]
         return ParametricSolution(solution, num_experiments, self.is_minimization)
+    
+    def solve_with_highs(self, verbose: bool = False, slack: float = 1e-6):
+        """
+        Solve the linear program using HiGHS (via highspy).
+        
+        This is an alternative to the PPOPT-based solver that is more stable.
+        Currently only supports problems WITHOUT experimental constraints.
+        
+        The LP is solved in the form:
+            minimize/maximize    α^T q
+            subject to           P q ≈ p  (equality constraints with slack)
+                                q ≥ 0    (non-negativity)
+        
+        Instead of strict equality P q = p, we use:
+            p - slack <= P q <= p + slack
+        
+        Args:
+            verbose: If True, print detailed solver output.
+            slack: Slack tolerance for equality constraints. Default 1e-6.
+                   Constraints P q = p become p - slack <= P q <= p + slack.
+        
+        Returns:
+            dict: Solution information with keys:
+                - 'status': Solution status ('optimal', 'infeasible', 'unbounded', etc.)
+                - 'objective_value': Optimal objective value (or None if not optimal)
+                - 'solution': Solution vector q (or None if not optimal)
+                - 'dual': Dual variables for constraints (or None if not optimal)
+        
+        Raises:
+            ImportError: If highspy is not installed
+            ValueError: If experimental constraints are present (not yet supported)
+        """
+        try:
+            import highspy
+        except ImportError as e:
+            raise ImportError(
+                "highspy is required to solve LPs with HiGHS. Install it with:\n"
+                "  pip install highspy\n"
+                f"Error: {e}"
+            )
+        
+        # Check for experimental constraints
+        if self.experiment_matrix is not None:
+            raise ValueError(
+                "solve_with_highs() does not yet support experimental constraints. "
+                "Use solve() with PPOPT for parametric problems, or remove experimental constraints."
+            )
+        
+        n_vars = len(self.objective)
+        n_constraints = len(self.rhs)
+        
+        if verbose:
+            print(f"Solving LP with HiGHS:")
+            print(f"  Variables: {n_vars}")
+            print(f"  Constraints: {n_constraints}")
+            print(f"  Problem type: {'Minimization' if self.is_minimization else 'Maximization'}")
+            print(f"  Slack tolerance: {slack}")
+        
+        # Create HiGHS model
+        h = highspy.Highs()
+        
+        # Set verbosity
+        if not verbose:
+            h.setOptionValue("log_to_console", False)
+        
+        # Define the LP:
+        # For HiGHS: minimize c^T x subject to l <= Ax <= u, lb <= x <= ub
+        
+        # Objective coefficients (handle maximization by negating)
+        if self.is_minimization:
+            c = self.objective.copy()
+        else:
+            c = -self.objective.copy()
+        
+        # Variable bounds: q >= 0 (lower bound 0, upper bound infinity)
+        lb = np.zeros(n_vars)
+        ub = np.full(n_vars, highspy.kHighsInf)
+        
+        # Constraint bounds: P q = p becomes p - slack <= P q <= p + slack
+        constraint_lower = self.rhs - slack
+        constraint_upper = self.rhs + slack
+        
+        # Add variables
+        h.addVars(n_vars, lb, ub)
+        
+        # Add linear objective
+        h.changeColsCost(n_vars, np.arange(n_vars), c)
+        
+        # Add constraints: P q = p
+        # We need to pass the constraint matrix in CSR format or as rows
+        for i in range(n_constraints):
+            row = self.constraint_matrix[i]
+            # Find non-zero entries for efficiency
+            nonzero_indices = np.where(np.abs(row) > 1e-15)[0]
+            if len(nonzero_indices) > 0:
+                h.addRow(
+                    constraint_lower[i],
+                    constraint_upper[i],
+                    len(nonzero_indices),
+                    nonzero_indices.astype(np.int32),
+                    row[nonzero_indices]
+                )
+        
+        # Solve
+        if verbose:
+            print("\nSolving...")
+        
+        h.run()
+        
+        # Get solution
+        solution_info = h.getInfo()
+        model_status = h.getModelStatus()
+        
+        result = {
+            'status': str(model_status),
+            'objective_value': None,
+            'solution': None,
+            'dual': None
+        }
+        
+        # Check if optimal
+        if model_status == highspy.HighsModelStatus.kOptimal:
+            solution = h.getSolution()
+            result['solution'] = solution.col_value
+            
+            # Get objective value (negate back for maximization)
+            obj_val = h.getObjectiveValue()
+            if self.is_minimization:
+                result['objective_value'] = obj_val
+            else:
+                result['objective_value'] = -obj_val
+            
+            # Get dual variables
+            result['dual'] = solution.row_dual
+            
+            if verbose:
+                print(f"\nOptimal solution found!")
+                print(f"Objective value: {result['objective_value']}")
+                print(f"Solution sum: {np.sum(result['solution']):.10f} (should be ~1.0)")
+        else:
+            if verbose:
+                print(f"\nSolver status: {model_status}")
+        
+        return result

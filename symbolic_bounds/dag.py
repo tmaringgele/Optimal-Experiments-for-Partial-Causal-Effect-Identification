@@ -235,7 +235,7 @@ class DAG:
         
         return response_types
     
-    def generate_all_response_types(self) -> Dict[Node, List[ResponseType]]:
+    def generate_all_response_types(self, R_only: bool = True) -> Dict[Node, List[ResponseType]]:
         """
         Generate all response types for all nodes in the DAG.
         
@@ -243,7 +243,8 @@ class DAG:
             Dictionary mapping each node to its list of response types.
         """
         all_response_types = {}
-        for node in self.get_all_nodes():
+        nodes_to_process = self.W_R if R_only else self.get_all_nodes()
+        for node in nodes_to_process:
             response_types = self.enumerate_response_types(node)
             node.response_types = response_types
             all_response_types[node] = response_types
