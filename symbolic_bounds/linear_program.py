@@ -811,3 +811,245 @@ class LinearProgram:
                 print(f"\nSolver status: {model_status}")
         
         return result
+    
+    def solve_with_autobound(self, dag_structure: str, node_domains: dict, 
+                            unobserved_nodes: str = "",
+                            intervention_data: dict = None,
+                            verbose: bool = False,
+                            solver: str = 'glpk'):
+        """
+        Solve the linear program using the autobound package.
+        
+        This method converts the LP problem into autobound's format by:
+        1. Creating a DAG from the provided structure
+        2. Writing observational data to a temporary CSV file
+        3. Optionally adding intervention data
+        4. Using autobound's optimization to solve for bounds
+        
+        Args:
+            dag_structure: DAG structure string (e.g., "Z -> X, M -> X, X -> Y, U_ZM -> Z, U_ZM -> M")
+            node_domains: Dictionary mapping node names to domain sizes (e.g., {'Z': 2, 'M': 2, 'X': 2, 'Y': 2})
+            unobserved_nodes: Comma-separated string of unobserved nodes (e.g., "U_ZM,U_ZX,U_XY")
+            intervention_data: Optional dictionary with intervention information:
+                {
+                    'data': DataFrame with intervention results,
+                    'intervention_node': Name of the intervened node (e.g., 'M'),
+                    'intervention_col': Column name for intervention values (e.g., 'M_do'),
+                    'observed_cols': List of observed variable columns (e.g., ['Z', 'X', 'Y'])
+                }
+            verbose: If True, print detailed solver output
+            solver: Solver to use ('glpk', 'ipopt', etc.)
+        
+        Returns:
+            dict: Solution information with keys:
+                - 'lower_bound': Lower bound on the objective
+                - 'upper_bound': Upper bound on the objective
+                - 'width': Width of the bounds (upper - lower)
+                - 'status': 'success' if solved successfully
+        
+        Raises:
+            ImportError: If autobound package is not installed
+            ValueError: If required parameters are missing
+        
+        Example:
+            >>> # Without interventions
+            >>> result = lp.solve_with_autobound(
+            ...     dag_structure="Z -> X, M -> X, X -> Y, U_ZM -> Z, U_ZM -> M, U_ZX -> Z, U_ZX -> X, U_XY -> X, U_XY -> Y",
+            ...     node_domains={'Z': 2, 'M': 2, 'X': 2, 'Y': 2},
+            ...     unobserved_nodes="U_ZM,U_ZX,U_XY"
+            ... )
+            
+            >>> # With interventions
+            >>> result = lp.solve_with_autobound(
+            ...     dag_structure="...",
+            ...     node_domains={'Z': 2, 'M': 2, 'X': 2, 'Y': 2},
+            ...     unobserved_nodes="U_ZM,U_ZX,U_XY",
+            ...     intervention_data={
+            ...         'data': df_doM,
+            ...         'intervention_node': 'M',
+            ...         'intervention_col': 'M_do',
+            ...         'observed_cols': ['Z', 'X', 'Y']
+            ...     }
+            ... )
+        """
+        try:
+            from autobound.causalProblem import causalProblem
+            from autobound.DAG import DAG as AutoboundDAG
+            from autobound.Query import Query
+            import pandas as pd
+            import tempfile
+            import os
+        except ImportError as e:
+            raise ImportError(
+                "autobound package is required. Install it from the autobound_pkg directory:\n"
+                "  cd autobound_pkg && pip install -e .\n"
+                f"Error: {e}"
+            )
+        
+        if verbose:
+            print(f"Solving LP with autobound:")
+            print(f"  DAG structure: {dag_structure}")
+            print(f"  Node domains: {node_domains}")
+            print(f"  Unobserved nodes: {unobserved_nodes}")
+            print(f"  Solver: {solver}")
+        
+        # Step 1: Create temporary CSV file for observational data
+        # Convert constraint matrix and RHS to observational data format
+        obs_data = []
+        
+        # Parse constraint labels to extract variable configurations
+        for i, label in enumerate(self.constraint_labels):
+            prob = self.rhs[i]
+            # Parse label like "W_L=(Z=0,M=0), W_R=(X=0,Y=0)"
+            config = self._parse_constraint_label(label, node_domains)
+            config['prob'] = prob
+            obs_data.append(config)
+        
+        df_obs = pd.DataFrame(obs_data)
+        
+        # Create temporary file
+        temp_obs_file = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='')
+        temp_obs_path = temp_obs_file.name
+        temp_obs_file.close()
+        
+        try:
+            # Write observational data
+            df_obs.to_csv(temp_obs_path, index=False)
+            
+            if verbose:
+                print(f"\n  Wrote observational data to: {temp_obs_path}")
+                print(f"  Observational data shape: {df_obs.shape}")
+            
+            # Step 2: Create DAG and causalProblem
+            dag = AutoboundDAG()
+            dag.from_structure(dag_structure, unob=unobserved_nodes)
+            
+            problem = causalProblem(dag, number_values=node_domains)
+            problem.load_data(temp_obs_path)
+            problem.add_prob_constraints()
+            
+            # Step 3: Add intervention data if provided
+            if intervention_data is not None:
+                if verbose:
+                    print(f"\n  Adding intervention data for node: {intervention_data['intervention_node']}")
+                
+                df_intervention = intervention_data['data']
+                intervention_node = intervention_data['intervention_node']
+                intervention_col = intervention_data['intervention_col']
+                observed_cols = intervention_data['observed_cols']
+                
+                # Add intervention constraints
+                for _, row in df_intervention.iterrows():
+                    intervention_val = int(row[intervention_col])
+                    
+                    # Build query string for this intervention configuration
+                    query_parts = []
+                    for col in observed_cols:
+                        val = int(row[col])
+                        query_parts.append(f'{col}({intervention_node}={intervention_val})={val}')
+                    
+                    query_str = '&'.join(query_parts)
+                    prob_val = float(row['prob'])
+                    
+                    lhs = problem.query(query_str)
+                    problem.add_constraint(lhs - Query(prob_val))
+                
+                if verbose:
+                    print(f"  Added {len(df_intervention)} intervention constraints")
+            
+            # Step 4: Set estimand based on objective function
+            # Find which variable has non-zero objective coefficients
+            estimand_query = self._infer_estimand_query(node_domains)
+            
+            if verbose:
+                print(f"\n  Estimand query: {estimand_query}")
+            
+            problem.set_estimand(problem.query(estimand_query))
+            
+            # Step 5: Solve for bounds
+            prog = problem.write_program()
+            lower, upper = prog.run_pyomo(solver, verbose=verbose)
+            
+            # Handle minimization vs maximization
+            if not self.is_minimization:
+                # For maximization, swap bounds
+                lower, upper = upper, lower
+            
+            result = {
+                'lower_bound': lower,
+                'upper_bound': upper,
+                'width': upper - lower,
+                'status': 'success'
+            }
+            
+            if verbose:
+                print(f"\n  Results:")
+                print(f"    Lower bound: {lower:.6f}")
+                print(f"    Upper bound: {upper:.6f}")
+                print(f"    Width: {upper - lower:.6f}")
+            
+            return result
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_obs_path):
+                os.unlink(temp_obs_path)
+                if verbose:
+                    print(f"\n  Cleaned up temporary file: {temp_obs_path}")
+    
+    def _parse_constraint_label(self, label: str, node_domains: dict) -> dict:
+        """
+        Parse a constraint label to extract variable configuration.
+        
+        Example: "W_L=(Z=0,M=0), W_R=(X=0,Y=0)" -> {'Z': 0, 'M': 0, 'X': 0, 'Y': 0}
+        """
+        import re
+        config = {}
+        
+        # Find all "VarName=value" patterns
+        pattern = r'(\w+)=(\d+)'
+        matches = re.findall(pattern, label)
+        
+        for var_name, value_str in matches:
+            if var_name in node_domains:
+                config[var_name] = int(value_str)
+        
+        return config
+    
+    def _infer_estimand_query(self, node_domains: dict) -> str:
+        """
+        Infer the estimand query from the objective function.
+        
+        This attempts to determine what causal effect is being estimated
+        based on the non-zero coefficients in the objective vector.
+        
+        For now, this is a simplified version that assumes a common pattern:
+        estimating P(Y(X=1)=1) where Y is the outcome and X is the treatment.
+        
+        Args:
+            node_domains: Dictionary of node domains
+        
+        Returns:
+            Query string for the estimand (e.g., "Y(X=1)=1")
+        """
+        # Simple heuristic: assume we're estimating Y(X=1)=1
+        # In a more complete implementation, we would:
+        # 1. Parse the variable_labels to identify which response types have non-zero coefficients
+        # 2. Infer the causal query from those response types
+        
+        # For now, use a common default pattern
+        # Try to find Y and X nodes (common naming convention)
+        if 'Y' in node_domains and 'X' in node_domains:
+            return 'Y(X=1)=1'
+        
+        # Fall back to first two nodes if Y and X don't exist
+        node_names = sorted(node_domains.keys())
+        if len(node_names) >= 2:
+            outcome = node_names[-1]  # Last node often outcome
+            treatment = node_names[-2]  # Second to last often treatment
+            return f'{outcome}({treatment}=1)=1'
+        
+        raise ValueError(
+            "Could not infer estimand query automatically. "
+            "Please specify the causal effect you want to estimate."
+        )
