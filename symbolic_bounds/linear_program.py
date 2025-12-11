@@ -818,7 +818,7 @@ class LinearProgram:
                             verbose: bool = False,
                             solver: str = 'glpk'):
         """
-        Solve the linear program using the autobound package.
+        Solve the linear programs (both min and max) using the autobound package.
         
         This method converts the LP problem into autobound's format by:
         1. Creating a DAG from the provided structure
@@ -969,11 +969,7 @@ class LinearProgram:
             # Step 5: Solve for bounds
             prog = problem.write_program()
             lower, upper = prog.run_pyomo(solver, verbose=verbose)
-            
-            # Handle minimization vs maximization
-            if not self.is_minimization:
-                # For maximization, swap bounds
-                lower, upper = upper, lower
+        
             
             result = {
                 'lower_bound': lower,
