@@ -9,7 +9,10 @@ This module defines the LP structure for computing bounds on causal effects:
 """
 
 import numpy as np
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Set
+
+from symbolic_bounds.data_generator import DataGenerator
+from symbolic_bounds.node import Node
 
 if TYPE_CHECKING:
     from .dag import DAG
@@ -906,6 +909,7 @@ class LinearProgram:
         
         # Check if all node only consist of single upper case letters
         for node in self.dag.nodes:
+            node = self.dag.get_node(node)
             if not node.name.isupper() or len(node.name) != 1:
                 raise ValueError(
                     f"Node '{node.name}' does not conform to autobound's naming convention. "
@@ -1024,6 +1028,66 @@ class LinearProgram:
                 os.unlink(temp_obs_path)
                 if verbose:
                     print(f"\n  Cleaned up temporary file: {temp_obs_path}")
+
+    def potency(self,intervention_node: Node, observed_nodes: Set[Node], generator: DataGenerator):
+        """
+        Compute the pot(Z) = Observational Bounds - Bounds with all experiments performed on Z
+        Computation is done using autobound
+        """
+        #Step 1. Compute interventional bounds
+        obs_result = self.solve_with_autobound(solver='ipopt')
+        W_obs = obs_result['width']
+
+        #Step 2. Create intervention data for all possible interventions on intervention_node
+        support_intervention = intervention_node.support #Set[int]
+        import pandas as pd
+        from itertools import product
+        
+        intervention_data = []
+        
+        # Get supports for all observed nodes
+        observed_nodes_list = sorted(observed_nodes, key=lambda n: n.name)  # Sort for consistency
+        observed_supports = [list(node.support) for node in observed_nodes_list]
+        
+        # Loop through all intervention values
+        for intervention_val in sorted(support_intervention):
+            # Generate all combinations of observed node values
+            for observed_config in product(*observed_supports):
+                # Create dictionary mapping nodes to values
+                Y_values = tuple(observed_config)
+                X_values = (intervention_val,)
+                
+                # Compute true probability
+                true_prob = generator.computeTrueIntervention(
+                    Y=set(observed_nodes_list), 
+                    X={intervention_node}, 
+                    Y_values=Y_values, 
+                    X_values=X_values
+                )
+                
+                # Build data row
+                row = {node.name: val for node, val in zip(observed_nodes_list, observed_config)}
+                row[f'{intervention_node.name}_do'] = intervention_val
+                row['prob'] = true_prob
+                
+                intervention_data.append(row)
+        
+        df_intervention = pd.DataFrame(intervention_data)
+        
+        #Step 3. Compute bounds with intervention data
+        intervention_result = self.solve_with_autobound(
+            intervention_data={
+                'data': df_intervention,
+                'intervention_node': intervention_node.name,
+                'intervention_col': f'{intervention_node.name}_do',
+                'observed_cols': [node.name for node in observed_nodes_list]
+            },
+            solver='ipopt'
+        )
+        W_int = intervention_result['width']
+        
+        # Return potency
+        return W_obs - W_int
     
     def _parse_constraint_label(self, label: str, node_domains: dict) -> dict:
         """
