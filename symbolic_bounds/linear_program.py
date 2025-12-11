@@ -904,6 +904,14 @@ class LinearProgram:
                 "ProgramFactory.write_LP()."
             )
         
+        # Check if all node only consist of single upper case letters
+        for node in self.dag.nodes:
+            if not node.name.isupper() or len(node.name) != 1:
+                raise ValueError(
+                    f"Node '{node.name}' does not conform to autobound's naming convention. "
+                    "All node names must be single uppercase letters (e.g., 'X', 'Y', 'Z')."
+                )
+        
         # Extract DAG info automatically
         autobound_info = self.dag.get_autobound_info()
         dag_structure = autobound_info['dag_structure']
