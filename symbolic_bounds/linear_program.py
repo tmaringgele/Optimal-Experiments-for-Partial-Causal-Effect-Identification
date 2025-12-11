@@ -9,7 +9,10 @@ This module defines the LP structure for computing bounds on causal effects:
 """
 
 import numpy as np
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .dag import DAG
 
 
 class ParametricSolution:
@@ -149,7 +152,8 @@ class LinearProgram:
         constraint_labels: list[str],
         experiment_matrix: Optional[np.ndarray] = None,
         experiment_labels: Optional[list[str]] = None,
-        is_minimization: bool = True
+        is_minimization: bool = True,
+        dag: Optional['DAG'] = None
     ):
         """
         Create a linear program.
@@ -161,7 +165,10 @@ class LinearProgram:
             q_labels: Enumeration of response type configurations for W_R nodes
             variable_labels: Names of decision variables q_γ
             constraint_labels: Names of constraints (configurations)
+            experiment_matrix: Optional experimental constraint matrix
+            experiment_labels: Optional experimental constraint labels
             is_minimization: True for min, False for max
+            dag: Optional reference to the DAG (used for autobound integration)
             
         Raises:
             ValueError: If dimensions don't match
@@ -203,6 +210,7 @@ class LinearProgram:
         self.is_minimization = is_minimization
         self.experiment_matrix = experiment_matrix
         self.experiment_labels = experiment_labels
+        self.dag = dag
     
     def print_lp(self, show_full_matrices: bool = False) -> None:
         """
@@ -668,7 +676,7 @@ class LinearProgram:
         num_experiments = 0 if self.experiment_matrix is None else self.experiment_matrix.shape[0]
         return ParametricSolution(solution, num_experiments, self.is_minimization)
     
-    def solve_with_highs(self, verbose: bool = False, slack: float = 1e-6):
+    def solve_with_highs(self, verbose: bool = False, slack: float = 1e-6, give_highs_object=False) -> dict:
         """
         Solve the linear program using HiGHS (via highspy).
         
@@ -773,12 +781,21 @@ class LinearProgram:
         # Solve
         if verbose:
             print("\nSolving...")
+        if give_highs_object:
+            return h
         
         h.run()
         
         # Get solution
         solution_info = h.getInfo()
         model_status = h.getModelStatus()
+        if verbose:
+            print(f"\nHiGHS solver finished.")
+            print(f"  Status: {model_status}")
+            print(f"  Solution info: {solution_info.basis_validity}")
+
+
+            
         
         result = {
             'status': str(model_status),
@@ -812,24 +829,19 @@ class LinearProgram:
         
         return result
     
-    def solve_with_autobound(self, dag_structure: str, node_domains: dict, 
-                            unobserved_nodes: str = "",
-                            intervention_data: dict = None,
+    def solve_with_autobound(self, intervention_data: dict = None,
                             verbose: bool = False,
                             solver: str = 'glpk'):
         """
         Solve the linear programs (both min and max) using the autobound package.
         
         This method converts the LP problem into autobound's format by:
-        1. Creating a DAG from the provided structure
+        1. Extracting DAG info automatically from the stored DAG reference
         2. Writing observational data to a temporary CSV file
         3. Optionally adding intervention data
         4. Using autobound's optimization to solve for bounds
         
         Args:
-            dag_structure: DAG structure string (e.g., "Z -> X, M -> X, X -> Y, U_ZM -> Z, U_ZM -> M")
-            node_domains: Dictionary mapping node names to domain sizes (e.g., {'Z': 2, 'M': 2, 'X': 2, 'Y': 2})
-            unobserved_nodes: Comma-separated string of unobserved nodes (e.g., "U_ZM,U_ZX,U_XY")
             intervention_data: Optional dictionary with intervention information:
                 {
                     'data': DataFrame with intervention results,
@@ -851,19 +863,17 @@ class LinearProgram:
             ImportError: If autobound package is not installed
             ValueError: If required parameters are missing
         
+        Note:
+            DAG structure, node domains, and unobserved nodes are extracted automatically
+            from the stored DAG reference. The LP must be created via ProgramFactory.write_LP()
+            for this to work properly.
+        
         Example:
             >>> # Without interventions
-            >>> result = lp.solve_with_autobound(
-            ...     dag_structure="Z -> X, M -> X, X -> Y, U_ZM -> Z, U_ZM -> M, U_ZX -> Z, U_ZX -> X, U_XY -> X, U_XY -> Y",
-            ...     node_domains={'Z': 2, 'M': 2, 'X': 2, 'Y': 2},
-            ...     unobserved_nodes="U_ZM,U_ZX,U_XY"
-            ... )
+            >>> result = lp.solve_with_autobound()
             
             >>> # With interventions
             >>> result = lp.solve_with_autobound(
-            ...     dag_structure="...",
-            ...     node_domains={'Z': 2, 'M': 2, 'X': 2, 'Y': 2},
-            ...     unobserved_nodes="U_ZM,U_ZX,U_XY",
             ...     intervention_data={
             ...         'data': df_doM,
             ...         'intervention_node': 'M',
@@ -885,6 +895,20 @@ class LinearProgram:
                 "  cd autobound_pkg && pip install -e .\n"
                 f"Error: {e}"
             )
+        
+        # Check that DAG reference is available
+        if self.dag is None:
+            raise ValueError(
+                "No DAG reference available. The LinearProgram must be created with a DAG reference "
+                "to use solve_with_autobound(). This should happen automatically when using "
+                "ProgramFactory.write_LP()."
+            )
+        
+        # Extract DAG info automatically
+        autobound_info = self.dag.get_autobound_info()
+        dag_structure = autobound_info['dag_structure']
+        node_domains = autobound_info['node_domains']
+        unobserved_nodes = autobound_info['unobserved_nodes']
         
         if verbose:
             print(f"Solving LP with autobound:")

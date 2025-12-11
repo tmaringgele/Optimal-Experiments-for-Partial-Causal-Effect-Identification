@@ -320,7 +320,7 @@ if result['objective_value'] is not None:
 
 ### Purpose
 
-Integrates with the autobound package's `causalProblem` interface. Useful when you need autobound's features or want to compare methods.
+Integrates with the autobound package's `causalProblem` interface. Useful when you need autobound's features or want to compare methods. DAG structure, node domains, and unobserved nodes are automatically extracted from the stored DAG reference.
 
 ### Mathematical Formulation
 
@@ -335,10 +335,7 @@ subject to           Observational data P(W_L, W_R)
 
 ```python
 def solve_with_autobound(
-    self, 
-    dag_structure: str,
-    node_domains: dict,
-    unobserved_nodes: str = "",
+    self,
     intervention_data: dict = None,
     verbose: bool = False,
     solver: str = 'glpk'
@@ -346,20 +343,6 @@ def solve_with_autobound(
 ```
 
 ### Parameters
-
-- **dag_structure** (`str`, required):
-  - DAG structure in autobound format
-  - Example: `"Z -> X, M -> X, X -> Y, U_ZM -> Z, U_ZM -> M"`
-  - Must include all edges, including to/from unobserved nodes
-
-- **node_domains** (`dict`, required):
-  - Domain sizes for each node
-  - Example: `{'Z': 2, 'M': 2, 'X': 2, 'Y': 2}`
-  - Only include observed nodes (not U_* nodes)
-
-- **unobserved_nodes** (`str`, default=""):
-  - Comma-separated list of unobserved confounders
-  - Example: `"U_ZM,U_ZX,U_XY"`
 
 - **intervention_data** (`dict` or `None`, default=None):
   - If provided, adds interventional constraints
@@ -388,24 +371,25 @@ Dictionary with keys:
 - **width** (`float`): Width of identification region (upper - lower)
 - **status** (`str`): 'success' if solved successfully
 
+### Automatic DAG Parameter Extraction
+
+The method automatically extracts DAG information:
+- **dag_structure**: Edges formatted as "A -> B, C -> D" with U_L/U_R confounders added
+- **node_domains**: Domain sizes from node.support
+- **unobserved_nodes**: "U_L,U_R" based on W_L/W_R partition
+
+This happens through the `dag.get_autobound_info()` method called internally.
+
 ### Usage Examples
 
 #### Example 1: Without Interventions
 
 ```python
-# Create LP
+# Create LP (DAG info automatically stored)
 lp = ProgramFactory.write_LP(scm, Y={Y}, X={X}, Y_values=(1,), X_values=(1,))
 
-# Define DAG structure for autobound
-dag_structure = "X -> Y, U -> X, U -> Y"
-node_domains = {'X': 2, 'Y': 2}
-unobserved = "U"
-
-# Solve
+# Solve (no DAG parameters needed!)
 result = lp.solve_with_autobound(
-    dag_structure=dag_structure,
-    node_domains=node_domains,
-    unobserved_nodes=unobserved,
     verbose=True,
     solver='glpk'
 )
@@ -446,11 +430,8 @@ intervention_data = {
     'observed_cols': ['Y']
 }
 
-# Solve with interventions
+# Solve with interventions (DAG info extracted automatically)
 result = lp.solve_with_autobound(
-    dag_structure="X -> Y, U -> X, U -> Y",
-    node_domains={'X': 2, 'Y': 2},
-    unobserved_nodes="U",
     intervention_data=intervention_data,
     verbose=True,
     solver='glpk'
@@ -462,17 +443,6 @@ print(f"With intervention: Width = {result['width']:.6f}")
 #### Example 3: Complex Multi-Node Case (from 3Hedges.ipynb)
 
 ```python
-# Multi-node DAG with multiple confounders
-dag_structure = (
-    "Z -> X, M -> X, X -> Y, "
-    "U_ZM -> Z, U_ZM -> M, "
-    "U_ZX -> Z, U_ZX -> X, "
-    "U_XY -> X, U_XY -> Y"
-)
-
-node_domains = {'Z': 2, 'M': 2, 'X': 2, 'Y': 2}
-unobserved = "U_ZM,U_ZX,U_XY"
-
 # Load intervention data from CSV
 df_doM = pd.read_csv('data/doM.csv')
 
@@ -483,10 +453,8 @@ intervention_data_M = {
     'observed_cols': ['Z', 'X', 'Y']  # All other observed variables
 }
 
+# DAG structure automatically extracted from LP
 result = lp.solve_with_autobound(
-    dag_structure=dag_structure,
-    node_domains=node_domains,
-    unobserved_nodes=unobserved,
     intervention_data=intervention_data_M,
     verbose=False,
     solver='glpk'

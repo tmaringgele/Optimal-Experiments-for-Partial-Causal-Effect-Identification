@@ -488,3 +488,65 @@ class DAG:
         nodes_str = ", ".join(node.name for node in self.get_all_nodes())
         edges_str = ", ".join(f"{p.name}->{c.name}" for p, c in self.edges)
         return f"DAG(nodes=[{nodes_str}], edges=[{edges_str}])"
+    
+    def get_autobound_info(self) -> dict:
+        """
+        Generate parameters for autobound package integration.
+        
+        This method extracts DAG information and formats it for use with the
+        autobound package. It automatically adds unobserved confounders U_L and U_R
+        based on the W_L/W_R partition.
+        
+        Returns:
+            dict: Dictionary with keys:
+                - 'dag_structure': Comma-separated edge list (e.g., "X -> Y, U_R -> X, U_R -> Y")
+                - 'node_domains': Dict mapping node names to their support sizes
+                - 'unobserved_nodes': Comma-separated list of unobserved nodes (e.g., "U_L,U_R")
+        
+        Examples:
+            >>> dag = DAG()
+            >>> # ... add nodes and edges ...
+            >>> info = dag.get_autobound_info()
+            >>> print(info['dag_structure'])
+            'X -> Y, U_R -> X, U_R -> Y'
+        """
+        # Build node domains dictionary (only observed nodes)
+        node_domains = {}
+        for node in self.get_all_nodes():
+            node_domains[node.name] = len(node.support)
+        
+        # Build edge list
+        edge_list = []
+        
+        # Add U_L as parent of all W_L nodes if W_L is non-empty
+        # Note: U_L is NOT added to node_domains (unobserved nodes excluded)
+        if self.W_L:
+            for node in self.W_L:
+                edge_list.append(f"U_L -> {node.name}")
+        
+        # Add U_R as parent of all W_R nodes if W_R is non-empty
+        # Note: U_R is NOT added to node_domains (unobserved nodes excluded)
+        if self.W_R:
+            for node in self.W_R:
+                edge_list.append(f"U_R -> {node.name}")
+        
+        # Add all edges from the DAG
+        for parent, child in sorted(self.edges, key=lambda e: (e[0].name, e[1].name)):
+            edge_list.append(f"{parent.name} -> {child.name}")
+        
+        # Format as comma-separated string
+        dag_structure = ", ".join(edge_list)
+        
+        # Build unobserved nodes list
+        unobserved = []
+        if self.W_L:
+            unobserved.append("U_L")
+        if self.W_R:
+            unobserved.append("U_R")
+        unobserved_nodes = ",".join(unobserved)
+        
+        return {
+            'dag_structure': dag_structure,
+            'node_domains': node_domains,
+            'unobserved_nodes': unobserved_nodes
+        }

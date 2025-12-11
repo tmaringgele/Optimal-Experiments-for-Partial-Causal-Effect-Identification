@@ -54,7 +54,7 @@ class ProgramFactory:
         # ALGORITHM 1 - INITIALIZATION: Enumerate response types for all vertices
         # =========================================================================
         # For each vertex, enumerate all response types
-        all_response_types = dag.generate_all_response_types()
+        all_response_types = dag.generate_all_response_types(R_only=True)
         
         # Get all nodes (needed for compatibility checking)
         all_nodes = sorted(dag.get_all_nodes(), key=lambda n: n.name)
@@ -791,7 +791,8 @@ class ProgramFactory:
             constraint_labels=constraints.joint_prob_labels,
             experiment_matrix=experiment_matrix,
             experiment_labels=experiment_labels,
-            is_minimization=True  # Default to minimization for lower bound
+            is_minimization=True,  # Default to minimization for lower bound
+            dag=dag
         )
         
         return lp
