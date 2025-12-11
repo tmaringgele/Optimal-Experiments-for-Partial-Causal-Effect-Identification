@@ -86,6 +86,16 @@ When you (an LLM agent) are asked to help with this project, read these document
 
 **When to read**: For quick answers to specific questions
 
+### 07_solving_linear_programs.md
+- Complete guide to all three solving methods
+- solve() using PPOPT (parametric, experimental constraints)
+- solve_with_highs() using HiGHS (fast, stable, no experiments)
+- solve_with_autobound() using autobound (interventions, CSV-based)
+- Decision trees for choosing the right method
+- Common patterns, troubleshooting, and best practices
+
+**When to read**: When you need to solve an LP or encounter solver issues
+
 ## Key Concepts to Understand
 
 Before working on this codebase, ensure you understand:
