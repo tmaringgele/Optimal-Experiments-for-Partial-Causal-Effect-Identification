@@ -20,12 +20,12 @@ because when X=1, this would produce Y=1, contradicting observed Y=0.
 
 from typing import Dict, List, Tuple
 import numpy as np
-from .dag import DAG
-from .node import Node
-from .response_type import ResponseType
-from .constraints import Constraints
-from .program_factory import ProgramFactory
-from .random_dag_generator import generate_random_partitioned_dag, generate_random_chain_dag, generate_random_tree_dag
+from ..dag import DAG
+from ..node import Node
+from ..response_type import ResponseType
+from ..constraints import Constraints
+from ..program_factory import ProgramFactory
+from ..random_dag_generator import generate_random_partitioned_dag, generate_random_chain_dag, generate_random_tree_dag
 
 
 def validate_constraints(dag: DAG, verbose: bool = False) -> bool:

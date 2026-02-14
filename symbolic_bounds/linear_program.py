@@ -1029,13 +1029,14 @@ class LinearProgram:
                 if verbose:
                     print(f"\n  Cleaned up temporary file: {temp_obs_path}")
 
-    def potency(self,intervention_node: Node, observed_nodes: Set[Node], generator: DataGenerator, verbose: bool = False) -> float:
+    def potency_true(self,intervention_node: Node, observed_nodes: Set[Node], generator: DataGenerator, verbose: bool = False, solver='ipopt') -> float:
         """
-        Compute the pot(Z) = Observational Bounds - Bounds with all experiments performed on Z
+        Compute the pot_true(Z) = Observational Bounds - Bounds with all experiments performed on Z.
+        Important: This is not regular potency, but true potency where all possible interventions on Z are actually performed!!
         Computation is done using autobound
         """
         #Step 1. Compute interventional bounds
-        obs_result = self.solve_with_autobound(solver='ipopt')
+        obs_result = self.solve_with_autobound(solver=solver)
         W_obs = obs_result['width']
 
         #Step 2. Create intervention data for all possible interventions on intervention_node
@@ -1082,7 +1083,7 @@ class LinearProgram:
                 'intervention_col': f'{intervention_node.name}_do',
                 'observed_cols': [node.name for node in observed_nodes_list]
             },
-            solver='ipopt'
+            solver=solver
         )
         W_int = intervention_result['width']
         
@@ -1090,7 +1091,7 @@ class LinearProgram:
             print(f"\nPotency computation for intervention on node '{intervention_node.name}':")
             print(f"  Observational width: {W_obs:.6f}")
             print(f"  Interventional width: {W_int:.6f}")
-            print(f"  Potency: {W_obs - W_int:.6f}")
+            print(f"  True Potency: {W_obs - W_int:.6f}")
         # Return potency
         return W_obs - W_int
     
